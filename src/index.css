@@ -53,7 +53,7 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { font-size: 14px; scroll-behavior: smooth; }
+html { font-size: 16px; scroll-behavior: smooth; }
 
 body {
   font-family: var(--font-body);
@@ -89,7 +89,7 @@ body {
 /* ========== BUTTONS ========== */
 .btn {
   font-family: var(--font-display);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 1.5px;
   text-transform: uppercase;
@@ -118,7 +118,13 @@ body {
   background: linear-gradient(135deg, #ff8a50, var(--neon-orange));
   box-shadow: 0 0 30px rgba(255,101,63,0.5);
 }
-.btn-sm { padding: 6px 14px; font-size: 0.65rem; }
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(0.8);
+  box-shadow: none !important;
+}
+.btn-sm { padding: 6px 14px; font-size: 0.75rem; }
 .btn-yellow {
   border-color: var(--warm-yellow);
   color: var(--warm-yellow);
@@ -141,8 +147,8 @@ body {
 /* ========== TAGS / BADGES ========== */
 .badge {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
-  padding: 2px 8px;
+  font-size: 0.8rem;
+  padding: 3px 10px;
   border-radius: 3px;
   display: inline-block;
 }
@@ -155,7 +161,7 @@ body {
 /* ========== SECTION HEADERS ========== */
 .section-header {
   font-family: var(--font-display);
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   font-weight: 700;
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -227,10 +233,31 @@ body {
 }
 
 /* ========== EVENT LOG ========== */
+.rescue-node-btn {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  padding: 12px 24px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(68, 138, 255, 0.05);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.rescue-node-btn:hover:not(:disabled) {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  background: rgba(0, 229, 255, 0.1);
+}
+.rescue-node-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
 .event-item {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  padding: 5px 10px;
+  font-size: 0.85rem;
+  padding: 6px 12px;
   border-left: 3px solid var(--text-muted);
   margin-bottom: 3px;
   animation: slideIn 0.3s ease-out;
@@ -248,22 +275,24 @@ body {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.8rem;
 }
 .data-table th {
   text-align: left;
   color: var(--warm-yellow);
   font-family: var(--font-display);
-  font-size: 0.6rem;
+  font-size: 0.7rem;
   letter-spacing: 1px;
   text-transform: uppercase;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
 .data-table td {
-  padding: 5px 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.03);
   color: var(--text-secondary);
+  word-break: break-word;
+  line-height: 1.4;
 }
 .data-table tr:hover td { background: rgba(255,101,63,0.05); }
 

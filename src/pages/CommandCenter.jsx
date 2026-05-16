@@ -188,10 +188,7 @@ export default function CommandCenter() {
 
         // Alert blink
         if (status === 'critical' || status === 'warning') {
-          if (Math.sin(t * 6) > 0) {
-            ctx.font = '12px sans-serif';
-            ctx.fillText(status === 'critical' ? '⚠' : '!', x + r + 5, y - 4);
-          }
+            ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 5, y - 4);
         }
 
         // Battery micro-bar
@@ -281,7 +278,7 @@ export default function CommandCenter() {
         graph.addEdge(newId, n2, Math.floor(8 + Math.random() * 22));
       }
     }
-    sim.eventLog.add('success', `✅ ${label} added to mesh`);
+    sim.eventLog.add('success', `${label} added to mesh`);
     setTick(t => t + 1);
   };
 
@@ -292,16 +289,14 @@ export default function CommandCenter() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <h1 className="page-title glow-text-orange">⬡ Command Center</h1>
+        <h1 className="page-title glow-text-orange">Command Center</h1>
         <div className="page-controls">
           <button className="btn btn-sm" onClick={() => sim.isRunning ? sim.stop() : sim.start()}>
             {sim.isRunning ? '⏸ Pause' : '▶ Start'}
           </button>
           <button className="btn btn-sm btn-yellow" onClick={addNode}>+ Node</button>
           {selectedNode && <>
-            <button className="btn btn-sm btn-danger" onClick={() => { sim.failNode(selectedNode); setSelectedNode(null); }}>✕ Fail Node</button>
-            <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>↻ Recover</button>
-            <button className="btn btn-sm btn-danger" onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', 'Node removed from mesh'); setTick(t => t + 1); }}>🗑 Remove</button>
+            <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>Recover Node</button>
           </>}
         </div>
       </div>
@@ -329,7 +324,7 @@ export default function CommandCenter() {
         <div className="topology-area panel glass-panel topo-container">
           <div className="topo-controls">
             <span className="section-header" style={{ margin: 0, border: 'none', paddingBottom: 0 }}>
-              <span className="icon">◎</span> Live Topology — ESP32 Mesh Network
+              Live Topology — ESP32 Mesh Network
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
               {sim.isRunning ? '● LIVE' : '○ PAUSED'} · Click node to inspect · Drag to reposition
@@ -349,10 +344,18 @@ export default function CommandCenter() {
 
         {/* Inspector Panel */}
         <div className="inspector-area panel glass-panel">
-          <div className="section-header"><span className="icon">◈</span> Node Inspector</div>
+          <div className="section-header">Node Inspector</div>
 
           {sel ? (
             <div className="panel-scroll animate-slide-in">
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '12px', fontWeight: 'bold', border: '2px solid rgba(255,255,255,0.2)' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
+                  Delete Node
+                </button>
+                <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '12px', fontWeight: 'bold' }} onClick={() => sim.failNode(selectedNode)}>
+                  Fail Node
+                </button>
+              </div>
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--neon-orange)', marginBottom: 8 }}>
                 {sel.label}
               </h3>
@@ -361,18 +364,18 @@ export default function CommandCenter() {
               </span>
               <table className="data-table" style={{ marginTop: 12 }}>
                 <tbody>
-                  <tr><td>🌡 Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
-                  <tr><td>💧 Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
-                  <tr><td>☢ Gas Level</td><td style={{ color: sel.data.gasLevel > 600 ? '#FF1744' : '#FFC85C' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
-                  <tr><td>🔋 Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>
-                  <tr><td>📶 RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
-                  <tr><td>⏱ Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
-                  <tr><td>📊 Throughput</td><td>{sel.data.throughput.toFixed(0)} kbps</td></tr>
-                  <tr><td>📡 Signal</td><td>{sel.data.signalQuality.toFixed(0)}%</td></tr>
+                  <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
+                  <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
+                  <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 600 ? '#FF1744' : '#FFC85C' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
+                  <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>
+                  <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
+                  <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
+                  <tr><td>Throughput</td><td>{sel.data.throughput.toFixed(0)} kbps</td></tr>
+                  <tr><td>Signal</td><td>{sel.data.signalQuality.toFixed(0)}%</td></tr>
                 </tbody>
               </table>
 
-              <div className="section-header" style={{ marginTop: 16 }}><span className="icon">🗺</span> Routing Table</div>
+              <div className="section-header" style={{ marginTop: 16 }}>Routing Table</div>
               <div className="routing-table-wrap">
                 <table className="data-table">
                   <thead><tr><th>Dest</th><th>Next Hop</th><th>Cost</th><th>Hops</th></tr></thead>
@@ -397,7 +400,7 @@ export default function CommandCenter() {
           )}
 
           {/* Event Log */}
-          <div className="section-header" style={{ marginTop: 16 }}><span className="icon">📋</span> Live Event Stream</div>
+          <div className="section-header" style={{ marginTop: 16 }}>Live Event Stream</div>
           <div className="panel-scroll" style={{ maxHeight: 220 }}>
             {events.map(ev => (
               <div key={ev.id} className={`event-item ${ev.type}`}>
@@ -410,7 +413,7 @@ export default function CommandCenter() {
 
         {/* Analytics Strip */}
         <div className="analytics-strip panel glass-panel" style={{ maxHeight: 90 }}>
-          <div className="section-header" style={{ marginBottom: 4 }}><span className="icon">📊</span> Live Analytics</div>
+          <div className="section-header" style={{ marginBottom: 4 }}>Live Analytics</div>
           <div style={{ display: 'flex', gap: 24, fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
             <span>📦 Sent: <strong style={{ color: 'var(--neon-cyan)' }}>{health.packetsSent}</strong></span>
             <span>✅ Delivered: <strong style={{ color: 'var(--neon-green)' }}>{health.packetsDelivered}</strong></span>

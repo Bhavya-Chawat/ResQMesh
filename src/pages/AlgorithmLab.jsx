@@ -173,7 +173,7 @@ export default function AlgorithmLab() {
     setSteps(result.steps);
     setCurrentStep(0);
     setIsRunning(true);
-    sim.eventLog.add('algorithm', `🔬 Running ${algo.name} from ${sourceNode}`);
+    sim.eventLog.add('algorithm', `Running ${algo.name} from ${sourceNode}`);
   }, [activeAlgo, sourceNode, graph, nodeIds, algo.name, sim]);
 
   // Step through
@@ -380,7 +380,7 @@ export default function AlgorithmLab() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <h1 className="page-title glow-text-yellow">◇ Algorithm & Network Intelligence Center</h1>
+        <h1 className="page-title glow-text-yellow">Algorithm and Network Intelligence Center</h1>
       </div>
 
       {/* Algorithm Tabs */}
@@ -443,27 +443,27 @@ export default function AlgorithmLab() {
         <div className="algo-info-panel">
           {/* Theory */}
           <div className="panel glass-panel">
-            <div className="section-header"><span className="icon">📖</span> Theory — {algo.name}</div>
+            <div className="section-header">Theory — {algo.name}</div>
             <div className="algo-theory">{algo.description}</div>
             <div className="complexity-badge" style={{ marginTop: 10 }}>⏱ {algo.complexity}</div>
           </div>
 
           {/* Why Used */}
           <div className="panel glass-panel">
-            <div className="section-header"><span className="icon">❓</span> Why This Algorithm?</div>
+            <div className="section-header">Why This Algorithm?</div>
             <div className="algo-theory">{algo.why}</div>
           </div>
 
           {/* Pseudocode */}
           <div className="panel glass-panel">
-            <div className="section-header"><span className="icon">💻</span> Pseudocode</div>
+            <div className="section-header">Pseudocode</div>
             <div className="pseudocode-block">{algo.pseudocode}</div>
           </div>
 
           {/* Live Variables */}
           {highlightData && (
             <div className="panel glass-panel animate-slide-in">
-              <div className="section-header"><span className="icon">📊</span> Live State</div>
+              <div className="section-header">Live State</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                 {highlightData.distances && (
                   <div>

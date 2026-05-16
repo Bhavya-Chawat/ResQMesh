@@ -8,14 +8,14 @@ const QOS_INFO = [
 ];
 
 const NETWORK_CONCEPTS = [
-  { title: 'ESP-NOW Protocol', icon: '📡', desc: 'Peer-to-peer WiFi protocol by Espressif. No router needed. Low latency (~1ms), 250-byte payload. Perfect for mesh networks.' },
-  { title: 'Mesh Topology', icon: '🕸', desc: 'Every node can communicate with multiple peers. Self-healing: if one path fails, data routes through alternatives. High redundancy.' },
-  { title: 'Distance Vector Routing', icon: '🗺', desc: 'Each node maintains a table of distances to all destinations. Nodes share tables with neighbors. Bellman-Ford equation: Dx(y) = min{c(x,v) + Dv(y)}' },
-  { title: 'TCP vs UDP', icon: '🔄', desc: 'TCP: Connection-oriented, reliable, ordered. UDP: Connectionless, fast, no guarantees. Mesh uses UDP-like (ESP-NOW) for speed + application-level reliability.' },
-  { title: 'MQTT Protocol', icon: '📨', desc: 'Publish/Subscribe messaging for IoT. Lightweight, supports QoS levels 0-2. Broker-based architecture. Used for sensor data aggregation.' },
-  { title: 'Packet Flooding', icon: '🌊', desc: 'Broadcast a packet to all neighbors. Each node rebroadcasts once. Guarantees delivery but generates O(E) messages. TTL limits propagation.' },
-  { title: 'TTL (Time To Live)', icon: '⏳', desc: 'Counter decremented at each hop. Packet dropped when TTL=0. Prevents infinite loops. Recurrence: TTL(n+1) = TTL(n) - 1, base case: drop when 0.' },
-  { title: 'Heartbeat Mechanism', icon: '💓', desc: 'Periodic "alive" messages between nodes. If missed for N intervals, node marked as failed. Triggers self-healing rerouting.' },
+  { title: 'ESP-NOW Protocol', icon: '', desc: 'Peer-to-peer WiFi protocol by Espressif. No router needed. Low latency (~1ms), 250-byte payload. Perfect for mesh networks.' },
+  { title: 'Mesh Topology', icon: '', desc: 'Every node can communicate with multiple peers. Self-healing: if one path fails, data routes through alternatives. High redundancy.' },
+  { title: 'Distance Vector Routing', icon: '', desc: 'Each node maintains a table of distances to all destinations. Nodes share tables with neighbors. Bellman-Ford equation: Dx(y) = min{c(x,v) + Dv(y)}' },
+  { title: 'TCP vs UDP', icon: '', desc: 'TCP: Connection-oriented, reliable, ordered. UDP: Connectionless, fast, no guarantees. Mesh uses UDP-like (ESP-NOW) for speed + application-level reliability.' },
+  { title: 'MQTT Protocol', icon: '', desc: 'Publish/Subscribe messaging for IoT. Lightweight, supports QoS levels 0-2. Broker-based architecture. Used for sensor data aggregation.' },
+  { title: 'Packet Flooding', icon: '', desc: 'Broadcast a packet to all neighbors. Each node rebroadcasts once. Guarantees delivery but generates O(E) messages. TTL limits propagation.' },
+  { title: 'TTL (Time To Live)', icon: '', desc: 'Counter decremented at each hop. Packet dropped when TTL=0. Prevents infinite loops. Recurrence: TTL(n+1) = TTL(n) - 1, base case: drop when 0.' },
+  { title: 'Heartbeat Mechanism', icon: '', desc: 'Periodic "alive" messages between nodes. If missed for N intervals, node marked as failed. Triggers self-healing rerouting.' },
 ];
 
 export default function NetworkCenter() {
@@ -53,7 +53,7 @@ export default function NetworkCenter() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <h1 className="page-title glow-text-cyan">◎ Network Intelligence Center</h1>
+        <h1 className="page-title glow-text-cyan">Network Intelligence Center</h1>
         <div className="page-controls">
           <select
             value={selectedNode}
@@ -90,7 +90,7 @@ export default function NetworkCenter() {
         {/* ROUTING TABLES */}
         {viewTab === 'routing' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">🗺</span> Distance Vector Routing Table — {graph.nodes.get(selectedNode)?.label}</div>
+            <div className="section-header">Distance Vector Routing Table — {graph.nodes.get(selectedNode)?.label}</div>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 12 }}>
               Computed using <strong style={{ color: 'var(--neon-orange)' }}>Dijkstra's Algorithm</strong>. Each node maintains this table and shares it with neighbors (Distance Vector protocol).
             </p>
@@ -116,7 +116,7 @@ export default function NetworkCenter() {
         {/* PACKET FLOW */}
         {viewTab === 'packets' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">📦</span> Live Packet Stream</div>
+            <div className="section-header">Live Packet Stream</div>
             <div className="stat-strip" style={{ marginBottom: 12 }}>
               <div className="stat-card glass-panel"><div className="stat-label">Total Sent</div><div className="stat-value cyan">{sim.stats.totalPacketsSent}</div></div>
               <div className="stat-card glass-panel"><div className="stat-label">Delivered</div><div className="stat-value green">{sim.stats.totalPacketsDelivered}</div></div>
@@ -149,7 +149,7 @@ export default function NetworkCenter() {
         {/* PACKET ANATOMY */}
         {viewTab === 'anatomy' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">🔬</span> Packet Structure — {samplePacket.header}</div>
+            <div className="section-header">Packet Structure — {samplePacket.header}</div>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 16 }}>
               Each packet in the mesh network contains these fields. Click to understand each field's role.
             </p>
@@ -180,7 +180,7 @@ export default function NetworkCenter() {
         {/* ADJACENCY MATRIX */}
         {viewTab === 'matrix' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">🧮</span> Adjacency Matrix (Weighted)</div>
+            <div className="section-header">Adjacency Matrix (Weighted)</div>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 12 }}>
               <strong style={{ color: 'var(--warm-yellow)' }}>Discrete Mathematics</strong>: The adjacency matrix A[i][j] stores edge weights. ∞ means no direct connection. Used for matrix-based graph algorithms.
             </p>
@@ -207,7 +207,7 @@ export default function NetworkCenter() {
               </table>
             </div>
             {/* Adjacency List */}
-            <div className="section-header" style={{ marginTop: 20 }}><span className="icon">📋</span> Adjacency List</div>
+            <div className="section-header" style={{ marginTop: 20 }}>Adjacency List</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
               {nodeIds.map(id => (
                 <div key={id} style={{ marginBottom: 4, color: 'var(--text-secondary)' }}>
@@ -235,7 +235,7 @@ export default function NetworkCenter() {
         {/* QoS & MQTT */}
         {viewTab === 'qos' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">📶</span> QoS Levels & MQTT</div>
+            <div className="section-header">QoS Levels and MQTT</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {QOS_INFO.map(q => (
                 <div key={q.level} style={{
@@ -251,7 +251,7 @@ export default function NetworkCenter() {
                 </div>
               ))}
             </div>
-            <div className="section-header" style={{ marginTop: 20 }}><span className="icon">📊</span> Priority Queue Behavior</div>
+            <div className="section-header" style={{ marginTop: 20 }}>Priority Queue Behavior</div>
             <p style={{ fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
               Packets with <strong style={{ color: '#FF653F' }}>QoS 2 (High)</strong> are dequeued first, then <strong style={{ color: '#FFC85C' }}>QoS 1 (Medium)</strong>, then <strong style={{ color: '#00E5FF' }}>QoS 0 (Low)</strong>. SOS messages always get highest priority.
             </p>
@@ -261,7 +261,7 @@ export default function NetworkCenter() {
         {/* CN CONCEPTS */}
         {viewTab === 'concepts' && (
           <div className="panel glass-panel animate-slide-in">
-            <div className="section-header"><span className="icon">🎓</span> Computer Networks — Core Concepts</div>
+            <div className="section-header">Computer Networks — Core Concepts</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
               {NETWORK_CONCEPTS.map((c, i) => (
                 <div key={i} style={{

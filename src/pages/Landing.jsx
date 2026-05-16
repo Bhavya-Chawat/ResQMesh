@@ -148,23 +148,25 @@ export default function Landing() {
       <div className="landing-scanline" />
       <div className="landing-content animate-fade-in">
         <div className="landing-subtitle">Intelligent Self-Healing Disaster Communication</div>
-        <h1 className="landing-title">RESQMESH</h1>
-        <div className="landing-subtitle" style={{ marginBottom: 8, fontSize: '0.7rem', letterSpacing: 3 }}>
+        <h1 className="landing-title">
+          <span style={{ color: 'var(--neon-orange)' }}>ResQ</span>Mesh
+        </h1>
+        <div className="landing-subtitle" style={{ marginBottom: 12, fontSize: '0.85rem', letterSpacing: 3 }}>
           Rescue Routing System
         </div>
-        <p className="landing-desc">
+        <p className="landing-desc" style={{ fontSize: '1.1rem', maxWidth: '800px', lineHeight: '1.6' }}>
           An Interactive Graph-Theory, Networking, and IoT Disaster Intelligence Platform.
           Explore algorithms, visualize mesh networks, and simulate disaster rescue operations.
         </p>
         <div className="landing-buttons">
           <button className="btn btn-primary" onClick={() => navigate('/command')}>
-            ⬡ Launch Simulation
+            Launch Simulation
           </button>
           <button className="btn btn-yellow" onClick={() => navigate('/algorithms')}>
-            ◇ Explore Algorithms
+            Explore Algorithms
           </button>
           <button className="btn btn-cyan" onClick={() => navigate('/network')}>
-            ◎ Network Center
+            Network Center
           </button>
         </div>
       </div>

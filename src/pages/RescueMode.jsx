@@ -16,6 +16,7 @@ export default function RescueMode() {
   const [rescueResult, setRescueResult] = useState(null);
   const [isComputing, setIsComputing] = useState(false);
   const [rescueStepIdx, setRescueStepIdx] = useState(-1);
+  const resultsRef = useRef(null);
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -39,15 +40,20 @@ export default function RescueMode() {
     const alerts = Array.from(selectedAlerts);
     if (alerts.length < 2) return;
     setIsComputing(true);
-    sim.eventLog.add('algorithm', `🚨 RESCUE MODE: Computing optimal route for ${alerts.length} alert nodes`);
+    sim.eventLog.add('algorithm', `RESCUE MODE: Computing optimal route for ${alerts.length} alert nodes`);
 
     setTimeout(() => {
       const result = graph.tspBranchAndBound(alerts);
       setRescueResult(result);
       setRescueStepIdx(result.steps.length - 1);
       setIsComputing(false);
-      sim.eventLog.add('success', `✅ Rescue route computed! Cost: ${result.bestCost.toFixed(1)}, States: ${result.statesExplored}`);
-    }, 500);
+      sim.eventLog.add('success', `Rescue route computed! Cost: ${result.bestCost.toFixed(1)}ms`);
+      
+      // Auto-scroll to results on mobile
+      setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    }, 800);
   }, [selectedAlerts, graph, sim]);
 
   // Canvas
@@ -65,6 +71,24 @@ export default function RescueMode() {
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(container);
+
+    const handleCanvasClick = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const w = canvas.width, h = canvas.height, PAD = 55;
+
+      for (const [id, node] of graph.nodes) {
+        const { x, y } = nPos(node, w, h, PAD);
+        const dx = mx - x, dy = my - y;
+        if (dx * dx + dy * dy < 400) { // 20px radius
+          toggleAlert(id);
+          return;
+        }
+      }
+    };
+
+    canvas.addEventListener('mousedown', handleCanvasClick);
 
     let time = 0;
     function draw() {
@@ -145,7 +169,7 @@ export default function RescueMode() {
           ctx.shadowBlur = 0;
           ctx.font = '14px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('🚑', vx, vy - 14);
+          ctx.fillText('V', vx, vy - 14);
         }
 
         for (let i = 0; i < path.length; i++) {
@@ -195,35 +219,39 @@ export default function RescueMode() {
 
         if (isAlert) {
           ctx.font = '14px sans-serif';
-          ctx.fillText('🆘', x, y + r + 18);
+          ctx.fillText('ALERT', x, y + r + 18);
         }
       }
 
       animId = requestAnimationFrame(draw);
     }
     draw();
-    return () => { cancelAnimationFrame(animId); ro.disconnect(); };
+    return () => { 
+      cancelAnimationFrame(animId); 
+      ro.disconnect(); 
+      canvas.removeEventListener('mousedown', handleCanvasClick);
+    };
   }, [graph, selectedAlerts, rescueResult]);
 
   return (
     <div className="page-container">
       <div className="page-header">
         <h1 className="page-title" style={{ color: '#FF1744', textShadow: '0 0 15px rgba(255,23,68,0.5)' }}>
-          ⊕ RESCUE OPERATION MODE
+          RESCUE OPERATION MODE
         </h1>
         <div className="page-controls">
           <button className="btn btn-primary" onClick={computeRescue} disabled={selectedAlerts.size < 2 || isComputing}>
-            {isComputing ? '⏳ Computing...' : '🚨 Compute Rescue Route'}
+            {isComputing ? 'Computing...' : 'Compute Rescue Route'}
           </button>
           <button className="btn btn-sm" onClick={() => { setSelectedAlerts(new Set()); setRescueResult(null); }}>
-            ↻ Clear
+            Clear
           </button>
         </div>
       </div>
 
       {/* Alert node selector */}
       <div style={{ marginBottom: 12 }}>
-        <div className="section-header"><span className="icon">🎯</span> Select Alert / Victim Nodes</div>
+        <div className="section-header">Select Alert / Victim Nodes</div>
         <div className="rescue-alert-nodes">
           {nodeIds.map(id => (
             <button
@@ -231,7 +259,7 @@ export default function RescueMode() {
               className={`rescue-node-btn ${selectedAlerts.has(id) ? 'selected' : ''}`}
               onClick={() => toggleAlert(id)}
             >
-              {selectedAlerts.has(id) ? '🆘 ' : ''}{graph.nodes.get(id)?.label}
+              {selectedAlerts.has(id) ? 'ALERT ' : ''}{graph.nodes.get(id)?.label}
             </button>
           ))}
         </div>
@@ -245,31 +273,31 @@ export default function RescueMode() {
       <div className="rescue-layout">
         {/* Canvas */}
         <div className="panel glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
-          <div className="section-header" style={{ margin: 0 }}><span className="icon">🗺</span> Rescue Map</div>
+          <div className="section-header" style={{ margin: 0 }}>Rescue Map</div>
           <div ref={containerRef} style={{ flex: 1, minHeight: 400, position: 'relative', marginTop: 8 }}>
             <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
           </div>
         </div>
 
         {/* Rescue Info */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="rescue-info-column">
           {/* TSP Theory */}
           <div className="panel glass-panel">
-            <div className="section-header"><span className="icon">📖</span> TSP & Branch and Bound</div>
-            <div className="algo-theory">
-              The <strong>Traveling Salesman Problem (TSP)</strong> finds the shortest route visiting all nodes exactly once and returning to start. It is <strong>NP-Hard</strong> with complexity <code>O(N!)</code>.
+            <div className="section-header">TSP and Branch and Bound</div>
+            <div className="algo-theory" style={{ lineHeight: '1.6', fontSize: '0.9rem' }}>
+              The <strong>Traveling Salesman Problem (TSP)</strong> finds the shortest route visiting all nodes exactly once and returning to start. It is <strong>NP-Hard</strong> with complexity <code style={{ background: 'rgba(255,23,68,0.1)', padding: '2px 6px', borderRadius: '4px' }}>O(N!)</code>.
               <br /><br />
               <strong>Branch & Bound</strong> optimizes by pruning branches where accumulated cost exceeds the current best solution. This dramatically reduces the search space.
               <br /><br />
               In ResQMesh, TSP computes the <strong>optimal rescue path</strong> through all victim/alert locations — minimizing response time and travel distance for rescue teams.
             </div>
-            <div className="complexity-badge" style={{ marginTop: 10 }}>⏱ O(N!) worst case</div>
+            <div className="complexity-badge" style={{ marginTop: 14 }}>⏱ O(N!) worst case</div>
           </div>
 
           {/* Results */}
           {rescueResult && (
-            <div className="panel glass-panel animate-slide-in">
-              <div className="section-header"><span className="icon">📊</span> Rescue Route Analysis</div>
+            <div className="panel glass-panel animate-slide-in" ref={resultsRef}>
+              <div className="section-header">Rescue Route Analysis</div>
               <table className="data-table">
                 <tbody>
                   <tr><td>Optimal Cost</td><td style={{ color: 'var(--neon-orange)' }}>{rescueResult.bestCost.toFixed(1)}</td></tr>
@@ -288,7 +316,7 @@ export default function RescueMode() {
 
           {/* Concepts */}
           <div className="panel glass-panel">
-            <div className="section-header"><span className="icon">🎓</span> Key Concepts Demonstrated</div>
+            <div className="section-header">Key Concepts Demonstrated</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
               {[
                 'Hamiltonian Path / Cycle — visiting all nodes exactly once',

@@ -22,6 +22,7 @@ function AppShell() {
   const [graph] = useState(() => createDefaultMesh());
   const [sim] = useState(() => new SimulationEngine(graph));
   const [, setTick] = useState(0);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Force re-render on simulation updates
   useEffect(() => {
@@ -41,17 +42,28 @@ function AppShell() {
       {isLanding ? (
         <Landing />
       ) : (
-        <div className="app-layout">
-          <nav className="app-sidebar glass-panel">
-            <div className="sidebar-brand" onClick={() => navigate('/')}>
-              <span className="brand-icon">◈</span>
-              <span className="brand-text">RQM</span>
+        <div className={`app-layout ${isSidebarOpen ? 'sidebar-open' : ''}`}>
+          <header className="mobile-header glass-panel">
+            <button className="menu-toggle" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
+              <span className="bar"></span>
+              <span className="bar"></span>
+              <span className="bar"></span>
+            </button>
+            <div className="mobile-brand" onClick={() => navigate('/')}>
+              <span style={{ color: 'var(--neon-orange)' }}>ResQ</span>Mesh
+            </div>
+          </header>
+
+          <nav className={`app-sidebar glass-panel ${isSidebarOpen ? 'open' : ''}`}>
+            <div className="sidebar-brand" onClick={() => { navigate('/'); setIsSidebarOpen(false); }}>
+              <span className="brand-logo-res">ResQ</span>
+              <span className="brand-logo-text">Mesh</span>
             </div>
             <div className="sidebar-nav">
-              <NavItem to="/command" icon="⬡" label="Command" />
-              <NavItem to="/algorithms" icon="◇" label="Algo Lab" />
-              <NavItem to="/network" icon="◎" label="Network" />
-              <NavItem to="/rescue" icon="⊕" label="Rescue" />
+              <NavItem to="/command" label="Command" onClick={() => setIsSidebarOpen(false)} />
+              <NavItem to="/algorithms" label="Algo Lab" onClick={() => setIsSidebarOpen(false)} />
+              <NavItem to="/network" label="Network" onClick={() => setIsSidebarOpen(false)} />
+              <NavItem to="/rescue" label="Rescue" onClick={() => setIsSidebarOpen(false)} />
             </div>
             <div className="sidebar-footer">
               <div className="sim-status">
@@ -60,6 +72,7 @@ function AppShell() {
               </div>
             </div>
           </nav>
+          <div className="sidebar-overlay" onClick={() => setIsSidebarOpen(false)}></div>
           <main className="app-main">
             <Routes>
               <Route path="/command" element={<CommandCenter />} />
@@ -74,12 +87,11 @@ function AppShell() {
   );
 }
 
-function NavItem({ to, icon, label }) {
+function NavItem({ to, label, onClick }) {
   const location = useLocation();
   const isActive = location.pathname === to;
   return (
-    <Link to={to} className={`nav-item ${isActive ? 'active' : ''}`}>
-      <span className="nav-icon">{icon}</span>
+    <Link to={to} className={`nav-item ${isActive ? 'active' : ''}`} onClick={onClick}>
       <span className="nav-label">{label}</span>
     </Link>
   );

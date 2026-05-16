@@ -33,11 +33,11 @@ export class Packet {
 
   getTypeIcon() {
     switch (this.type) {
-      case 'SOS': return '🆘';
-      case 'HEARTBEAT': return '💓';
-      case 'ROUTING_UPDATE': return '🔄';
-      case 'SENSOR_ALERT': return '⚠️';
-      default: return '📦';
+      case 'SOS': return 'SOS';
+      case 'HEARTBEAT': return 'HB';
+      case 'ROUTING_UPDATE': return 'RU';
+      case 'SENSOR_ALERT': return 'SA';
+      default: return 'DATA';
     }
   }
 }
@@ -183,7 +183,7 @@ export class SimulationEngine {
       packet.hopCount = path.length - 1;
       this.stats.totalPacketsDelivered++;
       this.activePackets = this.activePackets.filter(p => p.id !== packet.id);
-      this.eventLog.add('success', `📬 Packet #${packet.id} delivered to ${dstLabel} (${packet.hopCount} hops)`);
+      this.eventLog.add('success', `Packet #${packet.id} delivered to ${dstLabel} (${packet.hopCount} hops)`);
       this.notify();
     }, 1500 + Math.random() * 2000);
 
@@ -195,13 +195,13 @@ export class SimulationEngine {
       if (node.data.status === 'failed') continue;
 
       if (node.data.temperature > 60) {
-        this.eventLog.add('critical', `🔥 HIGH TEMP: ${node.label} — ${node.data.temperature.toFixed(1)}°C`);
+        this.eventLog.add('critical', `HIGH TEMP: ${node.label} — ${node.data.temperature.toFixed(1)}°C`);
       }
       if (node.data.gasLevel > 600) {
-        this.eventLog.add('critical', `☢️ GAS ALERT: ${node.label} — Level ${node.data.gasLevel.toFixed(0)}`);
+        this.eventLog.add('critical', `GAS ALERT: ${node.label} — Level ${node.data.gasLevel.toFixed(0)}`);
       }
       if (node.data.battery < 15) {
-        this.eventLog.add('warning', `🔋 LOW BATTERY: ${node.label} — ${node.data.battery.toFixed(1)}%`);
+        this.eventLog.add('warning', `LOW BATTERY: ${node.label} — ${node.data.battery.toFixed(1)}%`);
       }
     }
   }
@@ -211,17 +211,17 @@ export class SimulationEngine {
     if (!node) return;
     node.data.status = 'failed';
 
-    this.eventLog.add('critical', `💀 NODE FAILURE: ${node.label} — all routes through this node will be recalculated`);
+    this.eventLog.add('critical', `NODE FAILURE: ${node.label} — all routes through this node will be recalculated`);
 
     // Trigger self-healing
     setTimeout(() => {
-      this.eventLog.add('info', `🔄 Self-healing: Recalculating routes around ${node.label}...`);
+      this.eventLog.add('info', `Self-healing: Recalculating routes around ${node.label}...`);
       // BFS to check connectivity
       const activeNodes = Array.from(this.graph.nodes.values()).filter(n => n.data.status !== 'failed');
       if (activeNodes.length > 0) {
         const { visited } = this.graph.bfs(activeNodes[0].id);
         const reachable = Array.from(visited).filter(id => this.graph.nodes.get(id)?.data.status !== 'failed').length;
-        this.eventLog.add('success', `✅ Self-healing complete: ${reachable}/${activeNodes.length} nodes reachable`);
+        this.eventLog.add('success', `Self-healing complete: ${reachable}/${activeNodes.length} nodes reachable`);
       }
       this.notify();
     }, 1000);
@@ -234,7 +234,7 @@ export class SimulationEngine {
     if (!node) return;
     node.data.status = 'active';
     node.data.battery = 80 + Math.random() * 20;
-    this.eventLog.add('success', `✅ NODE RECOVERED: ${node.label} — rejoining mesh network`);
+    this.eventLog.add('success', `NODE RECOVERED: ${node.label} — rejoining mesh network`);
     this.notify();
   }
 
