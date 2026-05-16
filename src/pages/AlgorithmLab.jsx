@@ -1,6 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../App';
 
+// Convert normalized (0-1) node coords → canvas pixels
+function nPos(node, w, h, pad = 50) {
+  return {
+    x: pad + node.nx * (w - 2 * pad),
+    y: pad + node.ny * (h - 2 * pad),
+  };
+}
+
 const ALGORITHMS = {
   dijkstra: {
     name: 'Dijkstra',
@@ -244,11 +252,15 @@ export default function AlgorithmLab() {
       const mstEdges = step?.mstEdges || [];
       const tspPath = step?.path;
 
+      const PAD = 50;
+
       // Draw edges
       for (const edge of graph.edges) {
         const src = graph.nodes.get(edge.source);
         const tgt = graph.nodes.get(edge.target);
         if (!src || !tgt) continue;
+        const sp = nPos(src, w, h, PAD);
+        const tp = nPos(tgt, w, h, PAD);
 
         let isRelax = relaxEdge && (
           (relaxEdge.source === edge.source && relaxEdge.target === edge.target) ||
@@ -260,52 +272,42 @@ export default function AlgorithmLab() {
         );
 
         if (isRelax) {
-          ctx.strokeStyle = '#FF653F';
-          ctx.lineWidth = 3;
-          ctx.shadowColor = '#FF653F';
-          ctx.shadowBlur = 12;
+          ctx.strokeStyle = '#FF653F'; ctx.lineWidth = 3;
+          ctx.shadowColor = '#FF653F'; ctx.shadowBlur = 12;
         } else if (isMST) {
-          ctx.strokeStyle = '#39FF14';
-          ctx.lineWidth = 3;
-          ctx.shadowColor = '#39FF14';
-          ctx.shadowBlur = 8;
+          ctx.strokeStyle = '#39FF14'; ctx.lineWidth = 3;
+          ctx.shadowColor = '#39FF14'; ctx.shadowBlur = 8;
         } else {
-          ctx.strokeStyle = 'rgba(255,200,92,0.15)';
-          ctx.lineWidth = 1.5;
-          ctx.shadowBlur = 0;
+          ctx.strokeStyle = 'rgba(255,200,92,0.18)'; ctx.lineWidth = 1.5; ctx.shadowBlur = 0;
         }
 
         ctx.beginPath();
-        ctx.moveTo(src.x, src.y);
-        ctx.lineTo(tgt.x, tgt.y);
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(tp.x, tp.y);
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Weight
-        const mx = (src.x + tgt.x) / 2, my = (src.y + tgt.y) / 2;
+        // Weight label
         ctx.font = '11px "Share Tech Mono"';
-        ctx.fillStyle = isRelax ? '#FF653F' : isMST ? '#39FF14' : 'rgba(255,200,92,0.4)';
+        ctx.fillStyle = isRelax ? '#FF653F' : isMST ? '#39FF14' : 'rgba(255,200,92,0.45)';
         ctx.textAlign = 'center';
-        ctx.fillText(edge.weight.toString(), mx, my - 6);
+        ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 6);
       }
 
       // TSP path overlay
       if (tspPath && tspPath.length > 1) {
         ctx.setLineDash([6, 4]);
-        ctx.strokeStyle = '#FF653F';
-        ctx.lineWidth = 3;
-        ctx.shadowColor = '#FF653F';
-        ctx.shadowBlur = 10;
+        ctx.strokeStyle = '#FF653F'; ctx.lineWidth = 3;
+        ctx.shadowColor = '#FF653F'; ctx.shadowBlur = 10;
         ctx.beginPath();
         for (let i = 0; i < tspPath.length; i++) {
           const n = graph.nodes.get(tspPath[i]);
           if (!n) continue;
-          if (i === 0) ctx.moveTo(n.x, n.y);
-          else ctx.lineTo(n.x, n.y);
+          const p = nPos(n, w, h, PAD);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
         }
         ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.shadowBlur = 0;
+        ctx.setLineDash([]); ctx.shadowBlur = 0;
       }
 
       // Draw nodes
@@ -313,6 +315,9 @@ export default function AlgorithmLab() {
         const isVisited = visitedSet.has(id);
         const isCurrent = step?.current === id;
         const isDiscovered = step?.discovered === id;
+        const { x, y } = nPos(node, w, h, PAD);
+        // Sync legacy coords for other consumers
+        node.x = x; node.y = y;
 
         const r = isCurrent ? 14 : 10;
         let color;
@@ -321,35 +326,32 @@ export default function AlgorithmLab() {
         else if (isVisited) color = '#39FF14';
         else color = '#448AFF';
 
-        // Glow
-        const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2.5);
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, r * 2.5);
         grad.addColorStop(0, color + '40');
         grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r * 2.5, 0, Math.PI * 2);
+        ctx.arc(x, y, r * 2.5, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = color;
         ctx.shadowColor = color;
         ctx.shadowBlur = isCurrent ? 16 : 8;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
 
-        // Label
-        ctx.font = '11px "Orbitron"';
+        ctx.font = 'bold 10px "Orbitron", monospace';
         ctx.fillStyle = '#f0eaf8';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label, node.x, node.y - r - 8);
+        ctx.fillText(node.label, x, y - r - 8);
 
-        // Distance label for Dijkstra/BF
         if (step?.distances) {
           const dist = step.distances.get(id);
           ctx.font = '10px "Share Tech Mono"';
           ctx.fillStyle = '#FFC85C';
-          ctx.fillText(dist === Infinity ? '∞' : dist.toFixed(1), node.x, node.y + r + 14);
+          ctx.fillText(dist === Infinity ? '∞' : dist.toFixed(1), x, y + r + 14);
         }
       }
 

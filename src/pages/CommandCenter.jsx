@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useApp } from '../App';
-import { GraphNode } from '../engine/graph';
+import { GraphNode, pixelToNorm } from '../engine/graph';
+
+// Convert normalized (0-1) node coords → canvas pixels
+function nodePos(node, w, h, pad = 55) {
+  return {
+    x: pad + node.nx * (w - 2 * pad),
+    y: pad + node.ny * (h - 2 * pad),
+  };
+}
 
 export default function CommandCenter() {
   const { graph, sim } = useApp();
@@ -9,92 +17,96 @@ export default function CommandCenter() {
   const [selectedNode, setSelectedNode] = useState(null);
   const [, setTick] = useState(0);
   const dragRef = useRef(null);
+  const animRef = useRef(null);
+  const timeRef = useRef(0);
 
-  // Start sim on mount
+  // Auto-start simulation
   useEffect(() => {
     if (!sim.isRunning) sim.start();
   }, [sim]);
 
-  // Redraw loop
+  // Subscribe for re-renders
   useEffect(() => {
     const unsub = sim.subscribe(() => setTick(t => t + 1));
     return unsub;
   }, [sim]);
 
-  // Canvas rendering
+  // ── Main Canvas Loop ──────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
-    let animId;
 
     function resize() {
-      const rect = container.getBoundingClientRect();
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+      const r = container.getBoundingClientRect();
+      canvas.width = r.width;
+      canvas.height = r.height;
+      graph.setCanvasSize(r.width, r.height);
     }
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(container);
 
-    let time = 0;
     function draw() {
-      time += 0.016;
+      timeRef.current += 0.016;
+      const t = timeRef.current;
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // Grid
+      // ── Grid ──
       ctx.strokeStyle = 'rgba(255,101,63,0.04)';
       ctx.lineWidth = 1;
       for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
       for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
-      // Draw edges
+      const PAD = 55;
+
+      // ── Edges ──
       for (const edge of graph.edges) {
         const src = graph.nodes.get(edge.source);
         const tgt = graph.nodes.get(edge.target);
         if (!src || !tgt) continue;
+        const sp = nodePos(src, w, h, PAD);
+        const tp = nodePos(tgt, w, h, PAD);
         const failed = src.data.status === 'failed' || tgt.data.status === 'failed';
 
-        ctx.strokeStyle = failed ? 'rgba(255,23,68,0.2)' : 'rgba(255,200,92,0.2)';
-        ctx.lineWidth = failed ? 1 : 2;
-        if (failed) ctx.setLineDash([4, 4]); else ctx.setLineDash([]);
+        ctx.strokeStyle = failed ? 'rgba(255,23,68,0.2)' : 'rgba(255,200,92,0.25)';
+        ctx.lineWidth = failed ? 1 : 1.5;
+        ctx.setLineDash(failed ? [4, 4] : []);
         ctx.beginPath();
-        ctx.moveTo(src.x, src.y);
-        ctx.lineTo(tgt.x, tgt.y);
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(tp.x, tp.y);
         ctx.stroke();
 
         // Weight label
         if (!failed) {
-          const mx = (src.x + tgt.x) / 2;
-          const my = (src.y + tgt.y) / 2;
           ctx.font = '10px "Share Tech Mono"';
-          ctx.fillStyle = 'rgba(255,200,92,0.5)';
+          ctx.fillStyle = 'rgba(255,200,92,0.55)';
           ctx.textAlign = 'center';
-          ctx.fillText(edge.weight.toString(), mx, my - 5);
+          ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 5);
         }
 
-        // Animated flow
+        // Animated flow dots on active edges
         if (!failed) {
-          const flowOffset = (time * 40) % 20;
+          const flowOff = (t * 40) % 20;
           ctx.setLineDash([3, 17]);
-          ctx.lineDashOffset = -flowOffset;
-          ctx.strokeStyle = 'rgba(0,229,255,0.25)';
+          ctx.lineDashOffset = -flowOff;
+          ctx.strokeStyle = 'rgba(0,229,255,0.3)';
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(src.x, src.y);
-          ctx.lineTo(tgt.x, tgt.y);
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(tp.x, tp.y);
           ctx.stroke();
         }
         ctx.setLineDash([]);
         ctx.lineDashOffset = 0;
       }
 
-      // Draw animated packets
+      // ── Active Packets ──
       for (const pkt of sim.activePackets) {
         if (!pkt.path || pkt.path.length < 2) continue;
-        const progress = ((time * 0.5) % 1);
+        const progress = (t * 0.45) % 1;
         const totalSegs = pkt.path.length - 1;
         const segFloat = progress * totalSegs;
         const seg = Math.min(Math.floor(segFloat), totalSegs - 1);
@@ -102,38 +114,45 @@ export default function CommandCenter() {
         const sn = graph.nodes.get(pkt.path[seg]);
         const en = graph.nodes.get(pkt.path[seg + 1]);
         if (!sn || !en) continue;
-        const px = sn.x + (en.x - sn.x) * segT;
-        const py = sn.y + (en.y - sn.y) * segT;
+        const sp = nodePos(sn, w, h, PAD);
+        const ep = nodePos(en, w, h, PAD);
+        const px = sp.x + (ep.x - sp.x) * segT;
+        const py = sp.y + (ep.y - sp.y) * segT;
 
         const color = pkt.getPriorityColor();
         ctx.shadowColor = color;
-        ctx.shadowBlur = 10;
+        ctx.shadowBlur = 12;
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
       }
 
-      // Draw nodes
+      // ── Nodes ──
       for (const [id, node] of graph.nodes) {
         const isSel = selectedNode === id;
         const status = node.data.status;
+        const { x, y } = nodePos(node, w, h, PAD);
 
-        // Outer glow
+        // Sync legacy .x/.y for algorithm pages that still use them
+        node.x = x;
+        node.y = y;
+
+        // Pulse glow
         let glowColor;
-        if (status === 'failed') glowColor = 'rgba(255,23,68,0.3)';
-        else if (status === 'critical') glowColor = 'rgba(255,23,68,0.4)';
-        else if (status === 'warning') glowColor = 'rgba(255,200,92,0.3)';
-        else glowColor = 'rgba(0,229,255,0.2)';
+        if (status === 'failed') glowColor = 'rgba(255,23,68,0.35)';
+        else if (status === 'critical') glowColor = 'rgba(255,101,63,0.45)';
+        else if (status === 'warning') glowColor = 'rgba(255,200,92,0.35)';
+        else glowColor = 'rgba(0,229,255,0.22)';
 
-        const pulseR = 20 + Math.sin(time * 2 + node.x * 0.01) * 5;
-        const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, pulseR);
+        const pulseR = (isSel ? 28 : 22) + Math.sin(t * 2.2 + node.nx * 6.28) * 5;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, pulseR);
         grad.addColorStop(0, glowColor);
         grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, pulseR, 0, Math.PI * 2);
+        ctx.arc(x, y, pulseR, 0, Math.PI * 2);
         ctx.fill();
 
         // Node body
@@ -146,9 +165,9 @@ export default function CommandCenter() {
 
         ctx.fillStyle = fillColor;
         ctx.shadowColor = fillColor;
-        ctx.shadowBlur = isSel ? 16 : 8;
+        ctx.shadowBlur = isSel ? 20 : 10;
         ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
 
@@ -157,43 +176,57 @@ export default function CommandCenter() {
           ctx.strokeStyle = '#FFC85C';
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(node.x, node.y, r + 5, 0, Math.PI * 2);
+          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        // Label
-        ctx.font = '11px "Orbitron"';
+        // ESP32 label
+        ctx.font = 'bold 10px "Orbitron", monospace';
         ctx.fillStyle = '#f0eaf8';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label, node.x, node.y - r - 8);
+        ctx.fillText(node.label, x, y - r - 8);
 
-        // Status indicator for critical/warning
+        // Alert blink
         if (status === 'critical' || status === 'warning') {
-          const blink = Math.sin(time * 6) > 0;
-          if (blink) {
+          if (Math.sin(t * 6) > 0) {
             ctx.font = '12px sans-serif';
-            ctx.fillText(status === 'critical' ? '⚠' : '!', node.x + r + 4, node.y - 4);
+            ctx.fillText(status === 'critical' ? '⚠' : '!', x + r + 5, y - 4);
           }
         }
+
+        // Battery micro-bar
+        const bw = 28, bh = 4;
+        const bx = x - bw / 2, by = y + r + 3;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.fillRect(bx, by, bw, bh);
+        const pct = node.data.battery / 100;
+        ctx.fillStyle = pct < 0.15 ? '#FF1744' : pct < 0.3 ? '#FFC85C' : '#39FF14';
+        ctx.fillRect(bx, by, bw * pct, bh);
       }
 
-      animId = requestAnimationFrame(draw);
+      animRef.current = requestAnimationFrame(draw);
     }
+
     draw();
-    return () => { cancelAnimationFrame(animId); ro.disconnect(); };
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      ro.disconnect();
+    };
   }, [graph, sim, selectedNode]);
 
-  // Mouse handling
-  const handleCanvasMouseDown = useCallback((e) => {
+  // ── Mouse: select & drag ──────────────────────────────────────────
+  const handleMouseDown = useCallback((e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
+    const w = canvas.width, h = canvas.height, PAD = 55;
 
     for (const [id, node] of graph.nodes) {
-      const dx = mx - node.x, dy = my - node.y;
-      if (dx * dx + dy * dy < 225) {
+      const { x, y } = nodePos(node, w, h, PAD);
+      const dx = mx - x, dy = my - y;
+      if (dx * dx + dy * dy < 256) {
         setSelectedNode(id);
         dragRef.current = { id, offsetX: dx, offsetY: dy };
         return;
@@ -202,39 +235,54 @@ export default function CommandCenter() {
     setSelectedNode(null);
   }, [graph]);
 
-  const handleCanvasMouseMove = useCallback((e) => {
+  const handleMouseMove = useCallback((e) => {
     if (!dragRef.current) return;
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const w = canvas.width, h = canvas.height;
     const node = graph.nodes.get(dragRef.current.id);
     if (node) {
-      node.x = e.clientX - rect.left - dragRef.current.offsetX;
-      node.y = e.clientY - rect.top - dragRef.current.offsetY;
+      const { nx, ny } = pixelToNorm(
+        mx - dragRef.current.offsetX,
+        my - dragRef.current.offsetY,
+        w, h, 55
+      );
+      node.nx = Math.max(0, Math.min(1, nx));
+      node.ny = Math.max(0, Math.min(1, ny));
     }
   }, [graph]);
 
-  const handleCanvasMouseUp = useCallback(() => { dragRef.current = null; }, []);
+  const handleMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
-  // Add node
+  // ── Add node ─────────────────────────────────────────────────────
   const addNode = () => {
-    const id = String.fromCharCode(65 + graph.nodes.size);
-    const label = `Node ${id}`;
-    const canvas = canvasRef.current;
-    const x = 100 + Math.random() * (canvas ? canvas.width - 200 : 400);
-    const y = 100 + Math.random() * (canvas ? canvas.height - 200 : 300);
-    graph.addNode(new GraphNode(id, label, x, y));
-    // Connect to random existing nodes
-    const existing = Array.from(graph.nodes.keys()).filter(k => k !== id);
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const usedIds = new Set(graph.nodes.keys());
+    let newId = '';
+    for (const ch of letters) {
+      if (!usedIds.has(ch)) { newId = ch; break; }
+    }
+    if (!newId) newId = `N${graph.nodes.size}`;
+    const label = `Node ${newId}`;
+    const nx = 0.15 + Math.random() * 0.7;
+    const ny = 0.15 + Math.random() * 0.7;
+    const node = new GraphNode(newId, label, nx, ny);
+    graph.addNode(node);
+    // Connect to 1-2 random existing active nodes
+    const existing = Array.from(graph.nodes.keys()).filter(k => k !== newId && graph.nodes.get(k)?.data.status !== 'failed');
     if (existing.length > 0) {
       const n1 = existing[Math.floor(Math.random() * existing.length)];
-      graph.addEdge(id, n1, Math.floor(8 + Math.random() * 20));
+      graph.addEdge(newId, n1, Math.floor(8 + Math.random() * 22));
       if (existing.length > 1) {
         let n2 = n1;
         while (n2 === n1) n2 = existing[Math.floor(Math.random() * existing.length)];
-        graph.addEdge(id, n2, Math.floor(8 + Math.random() * 20));
+        graph.addEdge(newId, n2, Math.floor(8 + Math.random() * 22));
       }
     }
-    sim.eventLog.add('success', `✅ Node ${label} added to mesh`);
+    sim.eventLog.add('success', `✅ ${label} added to mesh`);
+    setTick(t => t + 1);
   };
 
   const sel = selectedNode ? graph.nodes.get(selectedNode) : null;
@@ -250,80 +298,62 @@ export default function CommandCenter() {
             {sim.isRunning ? '⏸ Pause' : '▶ Start'}
           </button>
           <button className="btn btn-sm btn-yellow" onClick={addNode}>+ Node</button>
+          {selectedNode && <>
+            <button className="btn btn-sm btn-danger" onClick={() => { sim.failNode(selectedNode); setSelectedNode(null); }}>✕ Fail Node</button>
+            <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>↻ Recover</button>
+            <button className="btn btn-sm btn-danger" onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', 'Node removed from mesh'); setTick(t => t + 1); }}>🗑 Remove</button>
+          </>}
         </div>
       </div>
 
       {/* Stat Strip */}
       <div className="stat-strip">
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Active Nodes</div>
-          <div className="stat-value">{health.activeNodes}/{health.totalNodes}</div>
-        </div>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Edges</div>
-          <div className="stat-value yellow">{health.activeEdges}</div>
-        </div>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Packets Sent</div>
-          <div className="stat-value cyan">{health.packetsSent}</div>
-        </div>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Delivery Rate</div>
-          <div className="stat-value green">{health.deliveryRate}%</div>
-        </div>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Avg Latency</div>
-          <div className="stat-value yellow">{health.avgLatency.toFixed(1)}ms</div>
-        </div>
-        <div className="stat-card glass-panel">
-          <div className="stat-label">Density</div>
-          <div className="stat-value">{(health.density * 100).toFixed(0)}%</div>
-        </div>
+        {[
+          { label: 'Active Nodes', value: `${health.activeNodes}/${health.totalNodes}`, cls: '' },
+          { label: 'Active Edges', value: health.activeEdges, cls: 'yellow' },
+          { label: 'Packets Sent', value: health.packetsSent, cls: 'cyan' },
+          { label: 'Delivery Rate', value: `${health.deliveryRate}%`, cls: 'green' },
+          { label: 'Avg Latency', value: `${health.avgLatency.toFixed(1)}ms`, cls: 'yellow' },
+          { label: 'Graph Density', value: `${(health.density * 100).toFixed(0)}%`, cls: '' },
+        ].map(s => (
+          <div key={s.label} className="stat-card glass-panel">
+            <div className="stat-label">{s.label}</div>
+            <div className={`stat-value ${s.cls}`}>{s.value}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Dashboard Grid */}
+      {/* Main Grid */}
       <div className="dashboard-grid">
         {/* Topology Canvas */}
         <div className="topology-area panel glass-panel topo-container">
           <div className="topo-controls">
             <span className="section-header" style={{ margin: 0, border: 'none', paddingBottom: 0 }}>
-              <span className="icon">◎</span> Live Topology
+              <span className="icon">◎</span> Live Topology — ESP32 Mesh Network
             </span>
-            <div style={{ flex: 1 }} />
-            {selectedNode && (
-              <>
-                <button className="btn btn-sm btn-danger" onClick={() => {
-                  sim.failNode(selectedNode);
-                  setSelectedNode(null);
-                }}>✕ Fail</button>
-                <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>
-                  ↻ Recover
-                </button>
-                <button className="btn btn-sm btn-danger" onClick={() => {
-                  graph.removeNode(selectedNode);
-                  setSelectedNode(null);
-                  sim.eventLog.add('warning', `Node removed from mesh`);
-                }}>🗑 Remove</button>
-              </>
-            )}
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+              {sim.isRunning ? '● LIVE' : '○ PAUSED'} · Click node to inspect · Drag to reposition
+            </span>
           </div>
           <div className="topo-canvas-wrap" ref={containerRef}>
             <canvas
               ref={canvasRef}
-              onMouseDown={handleCanvasMouseDown}
-              onMouseMove={handleCanvasMouseMove}
-              onMouseUp={handleCanvasMouseUp}
-              onMouseLeave={handleCanvasMouseUp}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{ cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
             />
           </div>
         </div>
 
         {/* Inspector Panel */}
         <div className="inspector-area panel glass-panel">
-          <div className="section-header"><span className="icon">◈</span> Inspector</div>
+          <div className="section-header"><span className="icon">◈</span> Node Inspector</div>
+
           {sel ? (
             <div className="panel-scroll animate-slide-in">
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--neon-orange)', marginBottom: 10 }}>
+              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--neon-orange)', marginBottom: 8 }}>
                 {sel.label}
               </h3>
               <span className={`badge ${sel.data.status === 'active' ? 'badge-green' : sel.data.status === 'warning' ? 'badge-yellow' : 'badge-red'}`}>
@@ -342,7 +372,6 @@ export default function CommandCenter() {
                 </tbody>
               </table>
 
-              {/* Routing Table */}
               <div className="section-header" style={{ marginTop: 16 }}><span className="icon">🗺</span> Routing Table</div>
               <div className="routing-table-wrap">
                 <table className="data-table">
@@ -361,17 +390,18 @@ export default function CommandCenter() {
               </div>
             </div>
           ) : (
-            <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: 20, textAlign: 'center' }}>
-              Click a node to inspect
+            <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: 20, textAlign: 'center', marginTop: 40 }}>
+              <div style={{ fontSize: '2rem', marginBottom: 12, opacity: 0.3 }}>◎</div>
+              Click any node on the<br />topology to inspect it
             </div>
           )}
 
           {/* Event Log */}
-          <div className="section-header" style={{ marginTop: 16 }}><span className="icon">📋</span> Event Stream</div>
-          <div className="panel-scroll" style={{ maxHeight: 200 }}>
+          <div className="section-header" style={{ marginTop: 16 }}><span className="icon">📋</span> Live Event Stream</div>
+          <div className="panel-scroll" style={{ maxHeight: 220 }}>
             {events.map(ev => (
               <div key={ev.id} className={`event-item ${ev.type}`}>
-                <span style={{ opacity: 0.5, marginRight: 6 }}>{ev.timestamp.toLocaleTimeString()}</span>
+                <span style={{ opacity: 0.45, marginRight: 6, fontSize: '0.65rem' }}>{ev.timestamp.toLocaleTimeString()}</span>
                 {ev.message}
               </div>
             ))}
@@ -379,15 +409,16 @@ export default function CommandCenter() {
         </div>
 
         {/* Analytics Strip */}
-        <div className="analytics-strip panel glass-panel" style={{ maxHeight: 100 }}>
-          <div className="section-header" style={{ marginBottom: 6 }}><span className="icon">📊</span> Live Analytics</div>
-          <div style={{ display: 'flex', gap: 20, fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+        <div className="analytics-strip panel glass-panel" style={{ maxHeight: 90 }}>
+          <div className="section-header" style={{ marginBottom: 4 }}><span className="icon">📊</span> Live Analytics</div>
+          <div style={{ display: 'flex', gap: 24, fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
             <span>📦 Sent: <strong style={{ color: 'var(--neon-cyan)' }}>{health.packetsSent}</strong></span>
             <span>✅ Delivered: <strong style={{ color: 'var(--neon-green)' }}>{health.packetsDelivered}</strong></span>
             <span>❌ Dropped: <strong style={{ color: 'var(--neon-red)' }}>{health.packetsDropped}</strong></span>
             <span>🔋 Avg Battery: <strong style={{ color: health.avgBattery < 30 ? 'var(--neon-red)' : 'var(--neon-green)' }}>{health.avgBattery.toFixed(1)}%</strong></span>
             <span>⏱ Avg Latency: <strong style={{ color: 'var(--warm-yellow)' }}>{health.avgLatency.toFixed(1)}ms</strong></span>
-            <span>🔗 Graph Density: <strong style={{ color: 'var(--neon-orange)' }}>{(health.density * 100).toFixed(0)}%</strong></span>
+            <span>🔗 Density: <strong style={{ color: 'var(--neon-orange)' }}>{(health.density * 100).toFixed(0)}%</strong></span>
+            <span>🟢 Active Packets: <strong style={{ color: 'var(--neon-cyan)' }}>{sim.activePackets.length}</strong></span>
           </div>
         </div>
       </div>

@@ -8,6 +8,10 @@ export class GraphNode {
   constructor(id, label, x, y, data = {}) {
     this.id = id;
     this.label = label || `Node ${id}`;
+    // Store positions as 0-1 normalized fractions so they scale to any canvas
+    this.nx = x; // normalized x (0..1)
+    this.ny = y; // normalized y (0..1)
+    // Legacy direct pixel access (kept for compat – updated by canvas each frame)
     this.x = x;
     this.y = y;
     this.data = {
@@ -25,6 +29,14 @@ export class GraphNode {
     };
     this.vx = 0;
     this.vy = 0;
+  }
+
+  /** Compute pixel position from normalized coords + canvas size */
+  getPixelPos(w, h, pad = 60) {
+    return {
+      x: pad + this.nx * (w - 2 * pad),
+      y: pad + this.ny * (h - 2 * pad),
+    };
   }
 
   updateSensors() {
@@ -79,6 +91,14 @@ export class MeshGraph {
     this.nodes = new Map();
     this.edges = [];
     this.adjacencyList = new Map();
+    // Canvas dimensions for drag-to-normalized conversion
+    this._canvasW = 800;
+    this._canvasH = 600;
+  }
+
+  setCanvasSize(w, h) {
+    this._canvasW = w;
+    this._canvasH = h;
   }
 
   addNode(node) {
@@ -172,7 +192,7 @@ export class MeshGraph {
     const dist = new Map();
     const prev = new Map();
     const visited = new Set();
-    const pq = []; // Min-heap simulated with array
+    const pq = [];
 
     for (const [id] of this.nodes) {
       dist.set(id, Infinity);
@@ -247,7 +267,6 @@ export class MeshGraph {
 
   /**
    * Bellman-Ford Algorithm
-   * Handles negative weights and detects negative cycles
    */
   bellmanFord(sourceId) {
     const steps = [];
@@ -275,7 +294,6 @@ export class MeshGraph {
         if (this.nodes.get(edge.source)?.data.status === 'failed') continue;
         if (this.nodes.get(edge.target)?.data.status === 'failed') continue;
 
-        // Process both directions (undirected)
         for (const [u, v] of [[edge.source, edge.target], [edge.target, edge.source]]) {
           if (dist.get(u) !== Infinity && dist.get(u) + edge.weight < dist.get(v)) {
             const uLabel = this.nodes.get(u)?.label || u;
@@ -505,14 +523,12 @@ export class MeshGraph {
 
   /**
    * TSP using Branch and Bound
-   * For rescue route optimization
    */
   tspBranchAndBound(alertNodeIds) {
     const steps = [];
     const nodes = alertNodeIds.filter(id => this.nodes.has(id));
     if (nodes.length < 2) return { steps, bestPath: nodes, bestCost: 0 };
 
-    // Build distance matrix for alert nodes using Dijkstra
     const distMatrix = new Map();
     for (const src of nodes) {
       const { distances } = this.dijkstra(src);
@@ -528,7 +544,6 @@ export class MeshGraph {
       statesExplored++;
 
       if (visited.size === nodes.length) {
-        // Return to start
         const returnCost = distMatrix.get(current)?.get(path[0]) || Infinity;
         const totalCost = cost + returnCost;
         if (totalCost < bestCost) {
@@ -551,7 +566,6 @@ export class MeshGraph {
         const edgeCost = distMatrix.get(current)?.get(next) || Infinity;
         const newCost = cost + edgeCost;
 
-        // Branch and bound: prune if current cost exceeds best
         if (newCost >= bestCost) {
           statesPruned++;
           steps.push({
@@ -660,29 +674,33 @@ export class MeshGraph {
 
 /**
  * Create default 5-node ESP32 mesh network
+ * Positions stored as normalized 0..1 coordinates
  */
 export function createDefaultMesh() {
   const graph = new MeshGraph();
-  const centerX = 400;
-  const centerY = 300;
-  const radius = 200;
 
+  // Pentagon layout in normalized (0..1) space with padding
+  const cx = 0.5, cy = 0.5, r = 0.35;
   const positions = [
-    { x: centerX, y: centerY - radius },
-    { x: centerX + radius * Math.sin(2 * Math.PI / 5), y: centerY - radius * Math.cos(2 * Math.PI / 5) },
-    { x: centerX + radius * Math.sin(4 * Math.PI / 5), y: centerY - radius * Math.cos(4 * Math.PI / 5) },
-    { x: centerX - radius * Math.sin(4 * Math.PI / 5), y: centerY - radius * Math.cos(4 * Math.PI / 5) },
-    { x: centerX - radius * Math.sin(2 * Math.PI / 5), y: centerY - radius * Math.cos(2 * Math.PI / 5) },
+    { nx: cx + r * Math.sin(0),                   ny: cy - r * Math.cos(0) },
+    { nx: cx + r * Math.sin(2 * Math.PI / 5),     ny: cy - r * Math.cos(2 * Math.PI / 5) },
+    { nx: cx + r * Math.sin(4 * Math.PI / 5),     ny: cy - r * Math.cos(4 * Math.PI / 5) },
+    { nx: cx + r * Math.sin(6 * Math.PI / 5),     ny: cy - r * Math.cos(6 * Math.PI / 5) },
+    { nx: cx + r * Math.sin(8 * Math.PI / 5),     ny: cy - r * Math.cos(8 * Math.PI / 5) },
   ];
 
   const nodeLabels = ['Node A', 'Node B', 'Node C', 'Node D', 'Node E'];
   const nodeIds = ['A', 'B', 'C', 'D', 'E'];
 
   for (let i = 0; i < 5; i++) {
-    graph.addNode(new GraphNode(nodeIds[i], nodeLabels[i], positions[i].x, positions[i].y));
+    const node = new GraphNode(nodeIds[i], nodeLabels[i], positions[i].nx, positions[i].ny);
+    // Keep .x / .y same as .nx / .ny until first canvas render updates them
+    node.x = positions[i].nx;
+    node.y = positions[i].ny;
+    graph.addNode(node);
   }
 
-  // Create mesh topology with varying weights
+  // Mesh topology with varying weights (ms latency)
   graph.addEdge('A', 'B', 12);
   graph.addEdge('A', 'C', 18);
   graph.addEdge('A', 'E', 15);
@@ -693,4 +711,24 @@ export function createDefaultMesh() {
   graph.addEdge('B', 'E', 20);
 
   return graph;
+}
+
+/**
+ * Helper: convert a node's normalized coords to pixel coords on a given canvas
+ */
+export function nodeToPixel(node, w, h, pad = 60) {
+  return {
+    x: pad + node.nx * (w - 2 * pad),
+    y: pad + node.ny * (h - 2 * pad),
+  };
+}
+
+/**
+ * Helper: convert pixel coords back to normalized coords
+ */
+export function pixelToNorm(px, py, w, h, pad = 60) {
+  return {
+    nx: (px - pad) / (w - 2 * pad),
+    ny: (py - pad) / (h - 2 * pad),
+  };
 }

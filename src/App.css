@@ -1,7 +1,8 @@
 /* ========== APP LAYOUT ========== */
 .app-layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--bg-primary);
 }
 
@@ -25,7 +26,11 @@
   margin-left: var(--sidebar-width);
   flex: 1;
   min-height: 100vh;
+  height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Sidebar Brand */
@@ -119,7 +124,11 @@
 /* ========== COMMON PAGE STYLES ========== */
 .page-container {
   padding: 16px 20px;
-  min-height: 100vh;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
 }
 
 .page-header {
@@ -187,21 +196,24 @@
   grid-template-columns: 1fr 320px;
   grid-template-rows: 1fr auto;
   gap: 12px;
-  height: calc(100vh - 160px);
+  flex: 1;
+  min-height: 0;
 }
-.dashboard-grid .topology-area { grid-row: 1; grid-column: 1; }
-.dashboard-grid .inspector-area { grid-row: 1; grid-column: 2; }
+.dashboard-grid .topology-area { grid-row: 1; grid-column: 1; min-height: 0; }
+.dashboard-grid .inspector-area { grid-row: 1; grid-column: 2; min-height: 0; overflow-y: auto; }
 .dashboard-grid .analytics-strip { grid-row: 2; grid-column: 1 / -1; }
 
 .panel {
   padding: 14px;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 .panel-scroll {
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 /* ========== TOPOLOGY GRAPH ========== */
@@ -235,13 +247,19 @@
   display: grid;
   grid-template-columns: 1fr 360px;
   gap: 12px;
-  height: calc(100vh - 140px);
+  flex: 1;
+  min-height: 0;
+}
+.algo-layout > * {
+  min-height: 0;
+  overflow-y: auto;
 }
 .algo-tabs {
   display: flex;
   gap: 4px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .algo-tab {
   font-family: var(--font-display);
@@ -361,7 +379,12 @@
   display: grid;
   grid-template-columns: 1fr 340px;
   gap: 12px;
-  height: calc(100vh - 140px);
+  flex: 1;
+  min-height: 0;
+}
+.rescue-layout > * {
+  min-height: 0;
+  overflow-y: auto;
 }
 .rescue-alert-nodes {
   display: flex;
@@ -485,8 +508,14 @@
 
 /* ========== RESPONSIVE ========== */
 @media (max-width: 1200px) {
-  .dashboard-grid { grid-template-columns: 1fr; }
-  .dashboard-grid .inspector-area { grid-row: auto; grid-column: 1; max-height: 300px; }
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+    height: auto;
+  }
+  .dashboard-grid .topology-area { grid-row: 1; grid-column: 1; min-height: 400px; }
+  .dashboard-grid .inspector-area { grid-row: 2; grid-column: 1; max-height: 360px; }
+  .dashboard-grid .analytics-strip { grid-row: 3; grid-column: 1; }
   .algo-layout { grid-template-columns: 1fr; }
   .rescue-layout { grid-template-columns: 1fr; }
 }
@@ -494,5 +523,9 @@
   .landing-title { font-size: 2.2rem; letter-spacing: 6px; }
   .stat-strip { flex-direction: column; }
   .app-sidebar { display: none; }
-  .app-main { margin-left: 0; }
+  .app-main { margin-left: 0; height: auto; min-height: 100vh; }
+  .page-container { min-height: 100vh; }
+  .dashboard-grid { height: auto; }
+  .algo-layout { height: auto; }
+  .rescue-layout { height: auto; }
 }

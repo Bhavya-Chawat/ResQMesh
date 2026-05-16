@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../App';
 
+function nPos(node, w, h, pad = 55) {
+  return {
+    x: pad + node.nx * (w - 2 * pad),
+    y: pad + node.ny * (h - 2 * pad),
+  };
+}
+
 export default function RescueMode() {
   const { graph, sim } = useApp();
   const canvasRef = useRef(null);
@@ -71,29 +78,30 @@ export default function RescueMode() {
       for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
       for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
+      const PAD = 55;
       // Edges
       for (const edge of graph.edges) {
         const src = graph.nodes.get(edge.source);
         const tgt = graph.nodes.get(edge.target);
         if (!src || !tgt) continue;
-        ctx.strokeStyle = 'rgba(255,200,92,0.1)';
+        const sp = nPos(src, w, h, PAD);
+        const tp = nPos(tgt, w, h, PAD);
+        ctx.strokeStyle = 'rgba(255,200,92,0.12)';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(src.x, src.y);
-        ctx.lineTo(tgt.x, tgt.y);
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(tp.x, tp.y);
         ctx.stroke();
 
-        const mx = (src.x + tgt.x) / 2, my = (src.y + tgt.y) / 2;
         ctx.font = '9px "Share Tech Mono"';
         ctx.fillStyle = 'rgba(255,200,92,0.3)';
         ctx.textAlign = 'center';
-        ctx.fillText(edge.weight.toString(), mx, my - 4);
+        ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 4);
       }
 
       // Rescue path
       if (rescueResult?.bestPath && rescueResult.bestPath.length > 1) {
         const path = rescueResult.bestPath;
-        // Animated dashed rescue route
         const dashOffset = time * 30;
         ctx.setLineDash([8, 6]);
         ctx.lineDashOffset = -dashOffset;
@@ -105,99 +113,89 @@ export default function RescueMode() {
         for (let i = 0; i < path.length; i++) {
           const n = graph.nodes.get(path[i]);
           if (!n) continue;
-          if (i === 0) ctx.moveTo(n.x, n.y); else ctx.lineTo(n.x, n.y);
+          const p = nPos(n, w, h, PAD);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
         }
-        // Close the loop
         const first = graph.nodes.get(path[0]);
-        if (first) ctx.lineTo(first.x, first.y);
+        if (first) { const fp = nPos(first, w, h, PAD); ctx.lineTo(fp.x, fp.y); }
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.shadowBlur = 0;
 
         // Animated rescue vehicle
         const totalSegs = path.length;
-        const vehiclePos = (time * 0.15) % 1;
-        const segFloat = vehiclePos * totalSegs;
+        const vehicleProgress = (time * 0.15) % 1;
+        const segFloat = vehicleProgress * totalSegs;
         const seg = Math.floor(segFloat) % totalSegs;
         const segT = segFloat - Math.floor(segFloat);
         const sn = graph.nodes.get(path[seg]);
         const en = graph.nodes.get(path[(seg + 1) % path.length]);
         if (sn && en) {
-          const vx = sn.x + (en.x - sn.x) * segT;
-          const vy = sn.y + (en.y - sn.y) * segT;
-          // Vehicle glow
-          const vGrad = ctx.createRadialGradient(vx, vy, 0, vx, vy, 20);
+          const sp2 = nPos(sn, w, h, PAD);
+          const ep2 = nPos(en, w, h, PAD);
+          const vx = sp2.x + (ep2.x - sp2.x) * segT;
+          const vy = sp2.y + (ep2.y - sp2.y) * segT;
+          const vGrad = ctx.createRadialGradient(vx, vy, 0, vx, vy, 22);
           vGrad.addColorStop(0, 'rgba(255,101,63,0.5)');
           vGrad.addColorStop(1, 'transparent');
           ctx.fillStyle = vGrad;
-          ctx.beginPath();
-          ctx.arc(vx, vy, 20, 0, Math.PI * 2);
-          ctx.fill();
-          // Vehicle dot
-          ctx.fillStyle = '#FF653F';
-          ctx.shadowColor = '#FF653F';
-          ctx.shadowBlur = 15;
-          ctx.beginPath();
-          ctx.arc(vx, vy, 6, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.beginPath(); ctx.arc(vx, vy, 22, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#FF653F'; ctx.shadowColor = '#FF653F'; ctx.shadowBlur = 16;
+          ctx.beginPath(); ctx.arc(vx, vy, 7, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0;
-          ctx.font = '12px sans-serif';
-          ctx.fillText('🚑', vx - 6, vy - 12);
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('🚑', vx, vy - 14);
         }
 
-        // Order labels on path
         for (let i = 0; i < path.length; i++) {
           const n = graph.nodes.get(path[i]);
           if (!n) continue;
+          const p = nPos(n, w, h, PAD);
           ctx.font = 'bold 12px "Orbitron"';
           ctx.fillStyle = '#FF653F';
           ctx.textAlign = 'center';
-          ctx.fillText(`#${i + 1}`, n.x + 18, n.y - 18);
+          ctx.fillText(`#${i + 1}`, p.x + 20, p.y - 20);
         }
       }
 
       // Nodes
       for (const [id, node] of graph.nodes) {
         const isAlert = selectedAlerts.has(id);
+        const { x, y } = nPos(node, w, h, PAD);
+        node.x = x; node.y = y;
         const r = isAlert ? 14 : 10;
-        let color = isAlert ? '#FF1744' : '#448AFF';
+        const color = isAlert ? '#FF1744' : '#448AFF';
 
         if (isAlert) {
-          // Pulsing alert
-          const pulseR = 25 + Math.sin(time * 4) * 8;
+          const pulseR = 28 + Math.sin(time * 4) * 8;
           ctx.strokeStyle = `rgba(255,23,68,${0.3 + Math.sin(time * 4) * 0.2})`;
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(node.x, node.y, pulseR, 0, Math.PI * 2);
+          ctx.arc(x, y, pulseR, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        // Glow
-        const grad = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2.5);
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, r * 2.5);
         grad.addColorStop(0, color + '40');
         grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r * 2.5, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, r * 2.5, 0, Math.PI * 2); ctx.fill();
 
         ctx.fillStyle = color;
         ctx.shadowColor = color;
-        ctx.shadowBlur = isAlert ? 16 : 6;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.shadowBlur = isAlert ? 18 : 7;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
         ctx.shadowBlur = 0;
 
-        // Label
-        ctx.font = '11px "Orbitron"';
+        ctx.font = 'bold 10px "Orbitron", monospace';
         ctx.fillStyle = '#f0eaf8';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label, node.x, node.y - r - 8);
+        ctx.fillText(node.label, x, y - r - 8);
 
         if (isAlert) {
           ctx.font = '14px sans-serif';
-          ctx.fillText('🆘', node.x, node.y + r + 16);
+          ctx.fillText('🆘', x, y + r + 18);
         }
       }
 
