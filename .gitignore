@@ -1,24 +1,175 @@
-# Logs
-logs
-*.log
+# =========================
+
+# Node / React / Vite
+
+# =========================
+
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Environment files
 
-# Editor directories and files
+.env
+.env.local
+.env.*.local
+
+# =========================
+
+# Python
+
+# =========================
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+*.so
+
+venv/
+.venv/
+env/
+ENV/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Flask
+
+instance/
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+
+# PlatformIO
+
+# =========================
+
+.pio/
+.piolibdeps/
+
+# =========================
+
+# Arduino
+
+# =========================
+
+*.elf
+*.bin
+*.hex
+
+# =========================
+
+# ESP32 Build Artifacts
+
+# =========================
+
+firmware/build/
+firmware/.pio/
+firmware/.vscode/
+
+# =========================
+
+# Logs
+
+# =========================
+
+logs/
+*.log
+
+# MQTT logs
+
+mosquitto.log
+
+# =========================
+
+# OS Files
+
+# =========================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+
+# IDE
+
+# =========================
+
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+!.vscode/settings.json
+
+.idea/
+
+*.swp
+*.swo
+
+# =========================
+
+# Temporary Files
+
+# =========================
+
+tmp/
+temp/
+.cache/
+
+# =========================
+
+# Secrets
+
+# =========================
+
+secrets/
+credentials/
+
+*.pem
+*.key
+*.crt
+
+mqtt_credentials.json
+wifi_credentials.json
+
+# =========================
+
+# Runtime Data
+
+# =========================
+
+backend/runtime/
+backend/cache/
+backend/topology_snapshots/
+
+# =========================
+
+# Generated Reports
+
+# =========================
+
+reports/
+exports/
+screenshots/
+
+# =========================
+
+# Archives
+
+# =========================
+
+*.zip
+*.tar
+*.gz
+*.7z

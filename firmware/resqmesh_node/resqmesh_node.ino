@@ -1,25 +1,15 @@
 /**
- * ResQMesh ESP32 Node Firmware
- * ============================
- * Reads sensors (DHT22, MQ-2 gas sensor) and publishes to MQTT
- * via an ESP-NOW gateway bridge.
+ * ResQMesh ESP32 Node Firmware  v4 — Multi-Hop Forwarding
+ * =============================================================
+ * Adds routing table, DV updates, RSSI-based cost, route invalidation,
+ * and routing-table-aware next-hop selection on top of discovery.
  *
- * For ESP-NOW mesh nodes (non-gateway):
- *   - Sends ESP-NOW frames to the gateway MAC address
+ * Roles (set IS_GATEWAY in config.h):
+ *   IS_GATEWAY false → pure mesh node  (ESP-NOW only)
+ *   IS_GATEWAY true  → gateway node    (ESP-NOW receive + WiFi + MQTT)
  *
- * For the gateway ESP32:
- *   - Receives ESP-NOW frames and re-publishes to MQTT over WiFi
- *
- * MQTT Topics published:
- *   resqmesh/<NODE_ID>/sensor     – sensor readings
- *   resqmesh/<NODE_ID>/heartbeat  – keepalive every HEARTBEAT_INTERVAL_MS
- *   resqmesh/<NODE_ID>/alert      – emergency/SOS
- *   resqmesh/<NODE_ID>/topology   – neighbour list
- *
- * Dependencies (install via Arduino Library Manager):
- *   - PubSubClient  (Nick O'Leary)
- *   - ArduinoJson   (Benoit Blanchon)
- *   - DHT sensor library (Adafruit)
+ * Dependencies (Arduino Library Manager):
+ *   PubSubClient  · ArduinoJson  · DHT sensor library (Adafruit)
  *
  * Board: ESP32 Dev Module
  * Partition Scheme: Default 4MB with spiffs
@@ -32,64 +22,32 @@
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-// ──────────────────────────────────────────────
-// Configuration — edit these before flashing
-// ──────────────────────────────────────────────
+#include "config.h"
+#include "mesh_types.h"
+#include "discovery.h"
+#include "routing.h"
+#include "forwarding.h"
 
-#define NODE_ID        "A"          // Unique single-char or short string ID
-#define NODE_LABEL     "Node A"
-#define IS_GATEWAY     true         // true = gateway (WiFi+MQTT), false = mesh node only
+// ── Module singletons ─────────────────────────────────────────────────────────
+Discovery  discovery;
+Routing    routing;
+Forwarding forwarding;
 
-// WiFi (gateway only)
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASSWORD  "YOUR_PASSWORD"
-
-// MQTT (gateway only)
-#define MQTT_BROKER    "192.168.1.100"  // IP of Mosquitto broker
-#define MQTT_PORT      1883
-#define MQTT_USER      ""
-#define MQTT_PASS      ""
-
-// Gateway ESP-NOW MAC — all mesh nodes send to this MAC
-// Run Serial.println(WiFi.macAddress()) on the gateway to find it
-static uint8_t GATEWAY_MAC[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-
-// Sensor pins
-#define DHT_PIN        4
-#define DHT_TYPE       DHT22
-#define GAS_PIN        34   // MQ-2 analog output
-#define BATTERY_PIN    35   // Voltage divider to battery
-
-// Intervals
-#define SENSOR_INTERVAL_MS    2000
-#define HEARTBEAT_INTERVAL_MS 3000
-#define TOPOLOGY_INTERVAL_MS  10000
-
-// ──────────────────────────────────────────────
-// Globals
-// ──────────────────────────────────────────────
-
-DHT dht(DHT_PIN, DHT_TYPE);
-WiFiClient wifiClient;
+// ── Globals ───────────────────────────────────────────────────────────────────
+DHT         dht(DHT_PIN, DHT_TYPE);
+WiFiClient  wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-// ESP-NOW payload struct (shared between gateway and mesh nodes)
-typedef struct {
-  char     nodeId[8];
-  char     msgType[12];   // "sensor", "heartbeat", "alert", "topology"
-  char     jsonPayload[256];
-} EspNowFrame;
+static uint8_t MY_MAC[6];   // filled in setup()
 
-static EspNowFrame outFrame;
-static EspNowFrame inFrame;
+// Interval timers
+static uint32_t lastSensor    = 0;
+static uint32_t lastHeartbeat = 0;
+static uint32_t lastTopology  = 0;
 
-unsigned long lastSensor    = 0;
-unsigned long lastHeartbeat = 0;
-unsigned long lastTopology  = 0;
-
-// ──────────────────────────────────────────────
-// MQTT helpers
-// ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// MQTT helpers  (gateway only)
+// ══════════════════════════════════════════════════════════════════════════════
 
 String topicFor(const char* msgType) {
   return String("resqmesh/") + NODE_ID + "/" + msgType;
@@ -98,217 +56,322 @@ String topicFor(const char* msgType) {
 void mqttReconnect() {
   while (!mqttClient.connected()) {
     Serial.print("[MQTT] Connecting...");
-    String clientId = String("resqmesh-") + NODE_ID + "-" + random(0xffff);
+    String cid = String("resqmesh-") + NODE_ID + "-" + random(0xffff);
     bool ok = strlen(MQTT_USER) > 0
-      ? mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)
-      : mqttClient.connect(clientId.c_str());
+      ? mqttClient.connect(cid.c_str(), MQTT_USER, MQTT_PASS)
+      : mqttClient.connect(cid.c_str());
     if (ok) {
       Serial.println("connected");
     } else {
-      Serial.printf("failed (rc=%d) — retry in 3s\n", mqttClient.state());
+      Serial.printf("failed (rc=%d) — retry in 3 s\n", mqttClient.state());
       delay(3000);
     }
   }
 }
 
-void publishJson(const char* msgType, JsonDocument& doc) {
+void mqttPublishJson(const char* msgType, JsonDocument& doc) {
   char buf[300];
   serializeJson(doc, buf);
   mqttClient.publish(topicFor(msgType).c_str(), buf);
 }
 
-// ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// ESP-NOW receive callback
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Shared receive handler — called for both gateway and mesh node roles.
+// Routes HELLO / HELLO_ACK to the discovery module; DATA/SENSOR/etc. to MQTT
+// (on gateway) or future multi-hop forwarding.
+
+void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
+  if (len != sizeof(MeshFrame)) {
+    // Legacy frame from old firmware (single-file sketch) — handle gracefully
+    if (len == sizeof(struct { char nodeId[8]; char msgType[12]; char jsonPayload[256]; })) {
+      // Old EspNowFrame — only gateway handles this path
+#if IS_GATEWAY
+      struct OldFrame { char nodeId[8]; char msgType[12]; char jsonPayload[256]; };
+      const OldFrame* old = (const OldFrame*)data;
+      String topic = String("resqmesh/") + old->nodeId + "/" + old->msgType;
+      mqttClient.publish(topic.c_str(), old->jsonPayload);
+      Serial.printf("[GW] Legacy frame from %s/%s\n", old->nodeId, old->msgType);
+#endif
+    }
+    return;
+  }
+
+  const MeshFrame* frame = (const MeshFrame*)data;
+
+  // ── Discovery frames ──────────────────────────────────────────────────────
+  if (frame->pktType == PKT_HELLO || frame->pktType == PKT_HELLO_ACK) {
+    discovery.handleFrame(mac, frame, 0);
+    return;
+  }
+
+  // ── DV routing update ─────────────────────────────────────────────────────
+  if (frame->pktType == PKT_DV_UPDATE) {
+    // Ignore our own broadcasts reflected back
+    if (strcmp(frame->srcId, NODE_ID) == 0) return;
+
+    // Link cost to this neighbor from the discovery table
+    const NeighborEntry* nb = discovery.findByMac(mac);
+    uint8_t linkCost = nb ? (uint8_t)max(1, 110 + (int)nb->rssi) : 50;
+
+    routing.handleDvUpdate(frame->srcId, mac, linkCost, frame);
+    return;
+  }
+
+  // ── Data-plane frames: dedup + TTL + forward/deliver ────────────────────────
+  // forwarding.forward() handles:
+  //   - duplicate suppression (seqNum dedup)
+  //   - TTL decrement and drop
+  //   - gateway MQTT delivery  (IS_GATEWAY)
+  //   - next-hop re-send      (!IS_GATEWAY)
+  if (frame->pktType == PKT_SENSOR || frame->pktType == PKT_HEARTBEAT ||
+      frame->pktType == PKT_DATA   || frame->pktType == PKT_ALERT     ||
+      frame->pktType == PKT_TOPOLOGY) {
+    forwarding.forward(mac, frame);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Sensor reading
-// ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
 
 float readBatteryPercent() {
   int raw = analogRead(BATTERY_PIN);
-  // Assumes 3.3V ADC, 100k/100k voltage divider from 4.2V LiPo max
-  float voltage = (raw / 4095.0) * 3.3 * 2.0;
-  return constrain((voltage - 3.0) / (4.2 - 3.0) * 100.0, 0.0, 100.0);
+  float v = (raw / 4095.0f) * 3.3f * 2.0f;
+  return constrain((v - 3.0f) / (4.2f - 3.0f) * 100.0f, 0.0f, 100.0f);
 }
 
 float readGasLevel() {
-  int raw = analogRead(GAS_PIN);
-  return (raw / 4095.0) * 1000.0;  // map to 0-1000 ppm range
+  return (analogRead(GAS_PIN) / 4095.0f) * 1000.0f;
 }
 
-// ──────────────────────────────────────────────
-// ESP-NOW — Gateway receive callback
-// ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// Publish helpers
+// Sensor readings are serialised into a MeshFrame.payload for mesh nodes;
+// the gateway publishes directly to MQTT.
+// ══════════════════════════════════════════════════════════════════════════════
 
-#if IS_GATEWAY
-void onDataRecv(const uint8_t* mac, const uint8_t* data, int len) {
-  if (len != sizeof(EspNowFrame)) return;
-  memcpy(&inFrame, data, sizeof(EspNowFrame));
-
-  Serial.printf("[ESP-NOW] Received from %02X:%02X, node=%s, type=%s\n",
-    mac[4], mac[5], inFrame.nodeId, inFrame.msgType);
-
-  // Re-publish to MQTT
-  String topic = String("resqmesh/") + inFrame.nodeId + "/" + inFrame.msgType;
-  mqttClient.publish(topic.c_str(), inFrame.jsonPayload);
-}
-#endif
-
-// ──────────────────────────────────────────────
-// ESP-NOW — Mesh node send helper
-// ──────────────────────────────────────────────
-
+// Send an originated MeshFrame toward the gateway.
+// Stamps seqNum before transmitting so forwarding nodes can deduplicate.
+void sendToGateway(MeshFrame& f) {
 #if !IS_GATEWAY
-void sendViaEspNow(const char* msgType, JsonDocument& doc) {
-  strncpy(outFrame.nodeId,  NODE_ID,  sizeof(outFrame.nodeId) - 1);
-  strncpy(outFrame.msgType, msgType,  sizeof(outFrame.msgType) - 1);
-  serializeJson(doc, outFrame.jsonPayload, sizeof(outFrame.jsonPayload));
-  esp_now_send(GATEWAY_MAC, (uint8_t*)&outFrame, sizeof(outFrame));
-}
+  // Stamp sequence number (origination only — forwarded frames keep their seqNum)
+  f.seqNum = forwarding.nextSeq();
+
+  // 1. Try routing table for explicit "GW" destination
+  const uint8_t* nhMac = routing.nextHopMac("GW");
+
+  // 2. Fallback: any reachable neighbor (best RSSI)
+  if (!nhMac) nhMac = routing.bestNeighborMac();
+
+  if (!nhMac) {
+    Serial.println("[Mesh] No route to gateway — frame dropped");
+    return;
+  }
+
+  esp_err_t err = esp_now_send(nhMac, (const uint8_t*)&f, sizeof(f));
+  const NeighborEntry* nb = discovery.findByMac(nhMac);
+  Serial.printf("[Mesh] TX seq=%u ttl=%u → %s  err=%d\n",
+                f.seqNum, f.ttl, nb ? nb->nodeId : "??", err);
 #endif
+}
 
-// ──────────────────────────────────────────────
-// Publish sensor data
-// ──────────────────────────────────────────────
-
+// ── Sensor ────────────────────────────────────────────────────────────────────
 void publishSensor() {
-  float temp  = dht.readTemperature();
-  float hum   = dht.readHumidity();
-  float gas   = readGasLevel();
-  float bat   = readBatteryPercent();
+  float temp = dht.readTemperature();
+  float hum  = dht.readHumidity();
+  float gas  = readGasLevel();
+  float bat  = readBatteryPercent();
 
+  // Build JSON payload
   StaticJsonDocument<256> doc;
   doc["nodeId"]      = NODE_ID;
   doc["label"]       = NODE_LABEL;
-  doc["temperature"] = isnan(temp) ? 25.0 : temp;
-  doc["humidity"]    = isnan(hum)  ? 50.0 : hum;
+  doc["temperature"] = isnan(temp) ? 25.0f : temp;
+  doc["humidity"]    = isnan(hum)  ? 50.0f : hum;
   doc["gasLevel"]    = gas;
   doc["battery"]     = bat;
-  doc["rssi"]        = WiFi.RSSI();
-  doc["latency"]     = 10;   // placeholder; real value from ICMP/routing
-  doc["throughput"]  = 150;  // placeholder
+  doc["rssi"]        = (int)WiFi.RSSI();
+  doc["latency"]     = 10;
+  doc["throughput"]  = 150;
 
-  #if IS_GATEWAY
-    publishJson("sensor", doc);
-  #else
-    sendViaEspNow("sensor", doc);
-  #endif
+#if IS_GATEWAY
+  mqttPublishJson("sensor", doc);
+#else
+  MeshFrame f;
+  frameInit(&f, PKT_SENSOR, NODE_ID, "GW", MY_MAC);
+  serializeJson(doc, f.payload, FRAME_PAYLOAD_LEN);
+  sendToGateway(f);  // seqNum stamped inside sendToGateway
+#endif
 
-  Serial.printf("[SENSOR] temp=%.1f hum=%.1f gas=%.0f bat=%.1f\n",
-    temp, hum, gas, bat);
+  Serial.printf("[Sensor] temp=%.1f hum=%.1f gas=%.0f bat=%.1f\n",
+                temp, hum, gas, bat);
 }
 
-// ──────────────────────────────────────────────
-// Publish heartbeat
-// ──────────────────────────────────────────────
-
+// ── Heartbeat ─────────────────────────────────────────────────────────────────
 void publishHeartbeat() {
   StaticJsonDocument<128> doc;
   doc["nodeId"] = NODE_ID;
   doc["ts"]     = millis();
 
-  #if IS_GATEWAY
-    publishJson("heartbeat", doc);
-  #else
-    sendViaEspNow("heartbeat", doc);
-  #endif
+#if IS_GATEWAY
+  mqttPublishJson("heartbeat", doc);
+#else
+  MeshFrame f;
+  frameInit(&f, PKT_HEARTBEAT, NODE_ID, "GW", MY_MAC);
+  serializeJson(doc, f.payload, FRAME_PAYLOAD_LEN);
+  sendToGateway(f);  // seqNum stamped inside sendToGateway
+#endif
 }
 
-// ──────────────────────────────────────────────
-// Publish topology (neighbour list via ESP-NOW peer table)
-// ──────────────────────────────────────────────
-
+// ── Topology — neighbor table + routing table ─────────────────────────────────
 void publishTopology() {
   StaticJsonDocument<512> doc;
   doc["nodeId"] = NODE_ID;
-  JsonArray neighbours = doc.createNestedArray("neighbours");
 
-  // In a real deployment, iterate ESP-NOW peer list and measure RSSI
-  // Here we add a stub neighbour for illustration:
-  // JsonObject nb = neighbours.createNestedObject();
-  // nb["id"]      = "B";
-  // nb["rssi"]    = -65;
-  // nb["latency"] = 12;
+  // ── Neighbours (direct links from discovery) ─────────────────────────────
+  JsonArray arr = doc.createNestedArray("neighbours");
+  NeighborEntry neighbors[MAX_NEIGHBORS];
+  uint8_t cnt = discovery.getNeighbors(neighbors, MAX_NEIGHBORS);
+  for (uint8_t i = 0; i < cnt; i++) {
+    JsonObject nb = arr.createNestedObject();
+    nb["id"]      = neighbors[i].nodeId;
+    nb["rssi"]    = neighbors[i].rssi;
+    nb["latency"] = max(1, 110 + (int)neighbors[i].rssi); // = link cost
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             neighbors[i].mac[0], neighbors[i].mac[1], neighbors[i].mac[2],
+             neighbors[i].mac[3], neighbors[i].mac[4], neighbors[i].mac[5]);
+    nb["mac"] = macStr;
+  }
 
-  #if IS_GATEWAY
-    publishJson("topology", doc);
-  #else
-    sendViaEspNow("topology", doc);
-  #endif
+  // ── Routing table (full DV table for backend graph view) ─────────────────
+  JsonArray routes = doc.createNestedArray("routes");
+  RouteEntry routesBuf[MAX_ROUTES];
+  uint8_t rCnt = routing.getRoutes(routesBuf, MAX_ROUTES);
+  for (uint8_t i = 0; i < rCnt; i++) {
+    const RouteEntry& r = routesBuf[i];
+    JsonObject ro = routes.createNestedObject();
+    ro["dest"]     = r.dest;
+    ro["nextHop"]  = r.nextHop;
+    ro["cost"]     = r.cost;
+    ro["hopCount"] = r.hopCount;
+    ro["valid"]    = r.valid;
+  }
+
+#if IS_GATEWAY
+  mqttPublishJson("topology", doc);
+#else
+  MeshFrame f;
+  frameInit(&f, PKT_TOPOLOGY, NODE_ID, "GW", MY_MAC);
+  serializeJson(doc, f.payload, FRAME_PAYLOAD_LEN);
+  sendToGateway(f);  // seqNum stamped inside sendToGateway
+#endif
 }
 
-// ──────────────────────────────────────────────
-// SOS / Alert (call from interrupt or button)
-// ──────────────────────────────────────────────
-
+// ── Alert ─────────────────────────────────────────────────────────────────────
 void publishAlert(const char* alertType, const char* message) {
   StaticJsonDocument<200> doc;
-  doc["nodeId"]    = NODE_ID;
-  doc["label"]     = NODE_LABEL;
-  doc["type"]      = alertType;
-  doc["severity"]  = "critical";
-  doc["message"]   = message;
+  doc["nodeId"]   = NODE_ID;
+  doc["label"]    = NODE_LABEL;
+  doc["type"]     = alertType;
+  doc["severity"] = "critical";
+  doc["message"]  = message;
 
-  #if IS_GATEWAY
-    publishJson("alert", doc);
-  #else
-    sendViaEspNow("alert", doc);
-  #endif
+#if IS_GATEWAY
+  mqttPublishJson("alert", doc);
+#else
+  MeshFrame f;
+  frameInit(&f, PKT_ALERT, NODE_ID, "GW", MY_MAC);
+  serializeJson(doc, f.payload, FRAME_PAYLOAD_LEN);
+  sendToGateway(f);  // seqNum stamped inside sendToGateway
+#endif
 }
 
-// ──────────────────────────────────────────────
-// Setup & Loop
-// ──────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// Setup
+// ══════════════════════════════════════════════════════════════════════════════
 
 void setup() {
   Serial.begin(115200);
+  delay(200);
   dht.begin();
 
-  #if IS_GATEWAY
-    // ── Gateway setup ──
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("[WiFi] Connecting");
-    while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-    Serial.printf("\n[WiFi] Connected: %s\n", WiFi.localIP().toString().c_str());
-    Serial.printf("[WiFi] MAC: %s\n", WiFi.macAddress().c_str());
+#if IS_GATEWAY
+  // ── Gateway: WiFi station + AP (AP keeps a fixed channel for ESP-NOW) ──
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("[WiFi] Connecting");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.printf("\n[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[WiFi] MAC: %s  (share this with mesh nodes)\n",
+                WiFi.macAddress().c_str());
 
-    mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-    mqttClient.setBufferSize(512);
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setBufferSize(512);
 
-    // Init ESP-NOW to receive from mesh nodes
-    esp_now_init();
-    esp_now_register_recv_cb(onDataRecv);
+#else
+  // ── Mesh node: STA mode required for ESP-NOW ──
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();    // don't associate with any AP
+  Serial.printf("[Mesh] Node %s  MAC: %s\n",
+                NODE_ID, WiFi.macAddress().c_str());
+#endif
 
-  #else
-    // ── Mesh node setup ──
-    WiFi.mode(WIFI_STA);  // Required for ESP-NOW
-    esp_now_init();
+  // Read our own MAC
+  esp_read_mac(MY_MAC, ESP_MAC_WIFI_STA);
 
-    esp_now_peer_info_t peerInfo = {};
-    memcpy(peerInfo.peer_addr, GATEWAY_MAC, 6);
-    peerInfo.channel = 0;
-    peerInfo.encrypt = false;
-    esp_now_add_peer(&peerInfo);
-    Serial.println("[ESP-NOW] Mesh node ready");
-  #endif
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("[ESP-NOW] Init FAILED — halting");
+    while (true) delay(1000);
+  }
+  esp_now_register_recv_cb(onEspNowRecv);
+  Serial.println("[ESP-NOW] Initialised");
+
+  // Start discovery
+  discovery.begin(NODE_ID, MY_MAC);
+
+  // Start routing (depends on discovery)
+  routing.begin(NODE_ID, MY_MAC, discovery);
+
+  // Start forwarding (depends on discovery + routing)
+  forwarding.begin(NODE_ID, MY_MAC, discovery, routing);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Loop
+// ══════════════════════════════════════════════════════════════════════════════
+
 void loop() {
-  unsigned long now = millis();
+  uint32_t now = millis();
 
-  #if IS_GATEWAY
-    if (!mqttClient.connected()) mqttReconnect();
-    mqttClient.loop();
-  #endif
+#if IS_GATEWAY
+  if (!mqttClient.connected()) mqttReconnect();
+  mqttClient.loop();
+#endif
 
+  // ── Discovery tick (HELLO broadcast + cleanup) ────────────────────────────
+  discovery.tick();
+
+  // ── Routing tick (DV broadcast + route timeout) ───────────────────────────
+  routing.tick();
+
+  // ── Sensor readings ───────────────────────────────────────────────────────
   if (now - lastSensor >= SENSOR_INTERVAL_MS) {
     lastSensor = now;
     publishSensor();
   }
 
+  // ── Heartbeat ─────────────────────────────────────────────────────────────
   if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
     lastHeartbeat = now;
     publishHeartbeat();
   }
 
+  // ── Topology report (populated from live neighbor table) ──────────────────
   if (now - lastTopology >= TOPOLOGY_INTERVAL_MS) {
     lastTopology = now;
     publishTopology();
