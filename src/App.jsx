@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { HashRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { MeshGraph, GraphNode, createDefaultMesh } from './engine/graph';
 import { SimulationEngine } from './engine/simulation';
+import dataSourceManager from './services/dataSourceManager';
 import Landing from './pages/Landing';
 import CommandCenter from './pages/CommandCenter';
 import AlgorithmLab from './pages/AlgorithmLab';
@@ -30,12 +31,18 @@ function AppShell() {
     return () => unsub();
   }, [sim]);
 
-  // Cleanup
+  // Init data source manager — bridges hardware WebSocket ↔ existing graph/sim
+  useEffect(() => {
+    dataSourceManager.init(graph, sim, () => setTick(t => t + 1));
+    return () => dataSourceManager.destroy();
+  }, [graph, sim]);
+
+  // Cleanup sim on unmount
   useEffect(() => () => sim.destroy(), [sim]);
 
   const isLanding = location.pathname === '/';
 
-  const ctx = { graph, sim };
+  const ctx = { graph, sim, dataSourceManager };
 
   return (
     <AppContext.Provider value={ctx}>
@@ -69,6 +76,21 @@ function AppShell() {
               <div className="sim-status">
                 <span className={`status-dot ${sim.isRunning ? 'active' : 'paused'}`}></span>
                 <span className="status-label">{sim.isRunning ? 'LIVE' : 'OFF'}</span>
+              </div>
+              <div
+                className="sim-status"
+                style={{ marginTop: 6, cursor: 'pointer', opacity: 0.8 }}
+                onClick={() => dataSourceManager.toggle()}
+                title="Click to toggle Simulation / Hardware mode"
+              >
+                <span className={`status-dot ${dataSourceManager.isHardware ? 'active' : 'paused'}`}
+                  style={{ background: dataSourceManager.isHardware ? 'var(--neon-green)' : 'var(--neon-orange)' }}
+                />
+                <span className="status-label" style={{ fontSize: '0.6rem' }}>
+                  {dataSourceManager.isHardware
+                    ? (dataSourceManager.connectionStatus === 'connected' ? 'HW:LIVE' : 'HW:...')
+                    : 'SIM'}
+                </span>
               </div>
             </div>
           </nav>

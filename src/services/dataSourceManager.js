@@ -1,0 +1,210 @@
+/**
+ * dataSourceManager.js
+ * --------------------
+ * Controls whether the dashboard uses SIMULATION data or HARDWARE data.
+ *
+ * SIMULATION_MODE = true  → existing SimulationEngine drives everything (unchanged)
+ * SIMULATION_MODE = false → WebSocket events from Python backend drive the graph
+ *
+ * Usage in App.jsx (or any component that holds graph/sim):
+ *
+ *   import dataSourceManager from './services/dataSourceManager';
+ *
+ *   // During init:
+ *   dataSourceManager.init(graph, sim, notifyFn);
+ *
+ *   // Toggle from UI:
+ *   dataSourceManager.setMode('hardware');   // or 'simulation'
+ *
+ *   // Read current mode:
+ *   dataSourceManager.mode   // 'simulation' | 'hardware'
+ *   dataSourceManager.isHardware  // boolean
+ *   dataSourceManager.connectionStatus  // 'disconnected' | 'connecting' | 'connected'
+ */
+
+import websocketService from './websocketService.js';
+import {
+  applyTopologySnapshot,
+  handleNodeUpdate,
+  handleNodeFailure,
+  handleAlert,
+  applyStatsUpdate,
+} from './hardwareDataAdapter.js';
+
+// Read from Vite env at build time; fall back to 'true' so existing behaviour is untouched.
+const ENV_SIMULATION_MODE = import.meta.env.VITE_SIMULATION_MODE;
+const DEFAULT_MODE =
+  ENV_SIMULATION_MODE === 'false' || ENV_SIMULATION_MODE === false
+    ? 'hardware'
+    : 'simulation';
+
+class DataSourceManager {
+  constructor() {
+    this._mode   = DEFAULT_MODE;
+    this._graph  = null;
+    this._sim    = null;
+    this._notify = null;          // () => void — triggers React re-render
+    this._wsUnsubs = [];          // cleanup functions for WS listeners
+    this._connectionStatus = 'disconnected';
+  }
+
+  // ── Public getters ──────────────────────────────────────────────────
+
+  get mode() { return this._mode; }
+  get isHardware() { return this._mode === 'hardware'; }
+  get isSimulation() { return this._mode === 'simulation'; }
+  get connectionStatus() { return this._connectionStatus; }
+
+  // ── Init ────────────────────────────────────────────────────────────
+
+  /**
+   * Must be called once after graph and sim are created.
+   * @param {MeshGraph}        graph
+   * @param {SimulationEngine} sim
+   * @param {function}         notifyFn  – call to trigger React re-render
+   */
+  init(graph, sim, notifyFn) {
+    this._graph  = graph;
+    this._sim    = sim;
+    this._notify = notifyFn;
+
+    if (this._mode === 'hardware') {
+      this._startHardwareMode();
+    } else {
+      this._startSimulationMode();
+    }
+  }
+
+  // ── Mode switching ───────────────────────────────────────────────────
+
+  /**
+   * @param {'simulation'|'hardware'} newMode
+   */
+  setMode(newMode) {
+    if (newMode === this._mode) return;
+
+    if (this._mode === 'hardware') {
+      this._stopHardwareMode();
+    } else {
+      this._stopSimulationMode();
+    }
+
+    this._mode = newMode;
+
+    if (newMode === 'hardware') {
+      this._startHardwareMode();
+    } else {
+      this._startSimulationMode();
+    }
+
+    this._notify?.();
+  }
+
+  toggle() {
+    this.setMode(this._mode === 'simulation' ? 'hardware' : 'simulation');
+  }
+
+  // ── Simulation mode ──────────────────────────────────────────────────
+
+  _startSimulationMode() {
+    if (!this._sim?.isRunning) {
+      this._sim?.start();
+    }
+    console.info('[DataSourceManager] Mode: SIMULATION');
+  }
+
+  _stopSimulationMode() {
+    this._sim?.stop();
+  }
+
+  // ── Hardware mode ────────────────────────────────────────────────────
+
+  _startHardwareMode() {
+    // Stop simulation so it doesn't clobber hardware data
+    if (this._sim?.isRunning) {
+      this._sim.stop();
+    }
+
+    this._connectionStatus = 'connecting';
+    websocketService.connect();
+
+    const graph  = this._graph;
+    const sim    = this._sim;
+    const notify = this._notify;
+
+    const unsubs = [
+
+      websocketService.on('_connected', () => {
+        this._connectionStatus = 'connected';
+        sim?.eventLog?.add('success', '🔌 Hardware WebSocket connected');
+        notify?.();
+      }),
+
+      websocketService.on('_disconnected', () => {
+        this._connectionStatus = 'disconnected';
+        sim?.eventLog?.add('warning', '⚠️ Hardware WebSocket disconnected');
+        notify?.();
+      }),
+
+      websocketService.on('_error', ({ message }) => {
+        this._connectionStatus = 'disconnected';
+        sim?.eventLog?.add('critical', `WebSocket error: ${message}`);
+        notify?.();
+      }),
+
+      websocketService.on('topology_update', (data) => {
+        applyTopologySnapshot(graph, data, sim);
+        notify?.();
+      }),
+
+      websocketService.on('node_update', (event) => {
+        handleNodeUpdate(graph, event, sim);
+        notify?.();
+      }),
+
+      websocketService.on('heartbeat', (event) => {
+        // Heartbeat ack — node is alive; update is handled server-side.
+        // We just log and re-render if status changed.
+        notify?.();
+      }),
+
+      websocketService.on('node_failure', (event) => {
+        handleNodeFailure(graph, event, sim);
+        notify?.();
+      }),
+
+      websocketService.on('alert', (event) => {
+        handleAlert(graph, event, sim);
+        notify?.();
+      }),
+
+      websocketService.on('stats_update', (statsPayload) => {
+        applyStatsUpdate(sim, statsPayload);
+        notify?.();
+      }),
+
+    ];
+
+    this._wsUnsubs = unsubs;
+    console.info('[DataSourceManager] Mode: HARDWARE — connecting to backend');
+  }
+
+  _stopHardwareMode() {
+    // Unregister all WebSocket listeners
+    for (const unsub of this._wsUnsubs) unsub();
+    this._wsUnsubs = [];
+    websocketService.disconnect();
+    this._connectionStatus = 'disconnected';
+  }
+
+  // ── Cleanup ───────────────────────────────────────────────────────────
+
+  destroy() {
+    this._stopHardwareMode();
+    this._stopSimulationMode();
+  }
+}
+
+// Singleton
+const dataSourceManager = new DataSourceManager();
+export default dataSourceManager;
