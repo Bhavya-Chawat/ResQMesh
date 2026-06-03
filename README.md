@@ -1,224 +1,154 @@
-# ResQMesh — Disaster Intelligence Platform
+# ResQMesh
 
-> **Intelligent Self-Healing Disaster Communication & Rescue Routing System**
->
-> An interactive Graph-Theory, Networking, and IoT Disaster Intelligence Platform.  
-> Explore algorithms, visualize mesh networks, and simulate disaster rescue operations in real time.
+**Intelligent Self-Healing Disaster Communication & Rescue Routing System**
 
----
+ResQMesh is a disaster-response communication platform combining ESP32-based mesh networking, IoT sensing, graph algorithms, and real-time visualization to provide resilient communication and situational awareness when traditional infrastructure is unavailable.
 
-## 📋 Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Live Modules](#live-modules)
-- [Tech Stack](#tech-stack)
-- [Architecture](#architecture)
-- [Algorithms Implemented](#algorithms-implemented)
-- [Simulation Engine](#simulation-engine)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Usage Guide](#usage-guide)
-- [Key Concepts](#key-concepts)
-- [Screenshots & UI](#screenshots--ui)
-- [Roadmap](#roadmap)
-- [License](#license)
+Designed for flood, earthquake, landslide, and building-collapse scenarios where cellular networks are unavailable or unreliable.
 
 ---
 
-## Overview
+## Table of Contents
 
-**ResQMesh** is an academic-grade, browser-based simulation platform that models how a self-healing mesh network of IoT sensor nodes would behave during a disaster scenario (fires, floods, building collapses, etc.).
-
-It combines:
-- **Graph theory** — shortest paths, spanning trees, traversal algorithms
-- **Network simulation** — real-time packet routing, node failure & recovery, QoS
-- **IoT sensor modeling** — temperature, gas, battery, RSSI, latency streams
-- **Rescue routing** — TSP-based optimal patrol planning for first responders
-
-The platform is designed as an interactive visualization and teaching tool that brings algorithms to life on a live, animated mesh topology.
+1. [Features](#features)
+2. [System Architecture](#system-architecture)
+3. [Technology Stack](#technology-stack)
+4. [Project Structure](#project-structure)
+5. [Firmware Architecture](#firmware-architecture)
+6. [Installation](#installation)
+7. [Frontend Setup](#frontend-setup)
+8. [Backend Setup](#backend-setup)
+9. [MQTT Setup](#mqtt-setup)
+10. [Firmware Setup](#firmware-setup)
+11. [Running in Simulation Mode](#running-in-simulation-mode)
+12. [Running in Hardware Mode](#running-in-hardware-mode)
+13. [MQTT Topics](#mqtt-topics)
+14. [REST API](#rest-api)
+15. [WebSocket Events](#websocket-events)
+16. [Firmware Configuration](#firmware-configuration)
+17. [Demo Workflow](#demo-workflow)
+18. [Future Work](#future-work)
+19. [License](#license)
 
 ---
 
 ## Features
 
-| Feature | Description |
+### Mesh Networking (Firmware)
+
+| Feature | Detail |
 |---|---|
-| 🗺 **Live Topology Canvas** | Drag-and-drop interactive graph rendered on HTML5 Canvas with animated packet flow |
-| ⚡ **Real-Time Sensor Simulation** | Nodes emit live temperature, humidity, gas, battery, RSSI, latency, throughput data |
-| 🔄 **Self-Healing Mesh** | Node failure triggers automatic BFS connectivity re-check and route recalculation |
-| 🧮 **Step-by-Step Algorithm Visualizer** | Watch Dijkstra, Bellman-Ford, BFS, DFS, Prim's, TSP execute node-by-node with annotations |
-| 📦 **Packet Simulator** | DATA / SOS / HEARTBEAT / ROUTING_UPDATE / SENSOR_ALERT packets routed via Dijkstra |
-| 🆘 **Rescue Mode** | TSP Branch-and-Bound computes optimal multi-stop rescue patrol routes |
-| 📊 **Network Analytics** | Real-time delivery rate, packet loss, avg latency, battery health, graph density |
-| 🗺 **Routing Tables** | Per-node Dijkstra-computed forwarding tables with next-hop, cost, and hop count |
-| 🔔 **Event Stream** | Live timestamped log of all network events, alerts, and algorithm steps |
+| Discovery | HELLO / HELLO\_ACK broadcast, dynamic peer registration, neighbor table with RSSI EMA |
+| Distance Vector Routing | Bellman-Ford relaxation, RSSI-based link cost `max(1, 110 + RSSI)`, per-destination routing table |
+| Multi-hop Forwarding | Next-hop lookup, TTL decrement and drop, loop guard |
+| Deduplication | Per-source 16-bit sequence numbers, 32-slot circular seen-set |
+| QoS Queues | Four strict-priority ring buffers — HIGH / MEDIUM / LOW / DEBUG |
+| Failure Detection | Heartbeat every 2 s, neighbor eviction after 15 s silence |
+| Route Reconvergence | Immediate poison-reverse on neighbor loss, triggered DV broadcast, topology push |
+| Self-healing | Automatic re-routing around failed nodes within one DV cycle |
+
+### IoT Sensing
+
+- Temperature & humidity (DHT22)
+- Gas / smoke level (MQ-2)
+- Battery voltage monitor
+- Real-time alert generation
+
+### Algorithms (Frontend Simulation Engine)
+
+- Dijkstra Shortest Path
+- Bellman-Ford Routing Updates
+- Breadth-First Search (BFS)
+- Depth-First Search (DFS)
+- Prim's Minimum Spanning Tree
+- Traveling Salesman Problem (Branch & Bound)
+
+### Dashboard
+
+- Live topology visualization
+- Node health monitoring
+- Routing table inspection
+- Adjacency matrix visualization
+- Packet monitoring
+- Rescue route planning
+- Event and alert feed
+
+### Backend Services
+
+- MQTT integration (Paho)
+- WebSocket streaming (Flask-SocketIO)
+- Topology & node-state management (NetworkX)
+- Heartbeat failure detection (6 s timeout)
+- REST APIs for topology, nodes, and health
 
 ---
 
-## Live Modules
+## System Architecture
 
-### 1. `Command Center` (`/command`)
-The operational dashboard. Contains:
-- **Live Topology Canvas** — renders the mesh graph; drag nodes freely; edges show weight labels and animated data-flow
-- **Node Inspector** — click any node to see all its sensor readings and its full Dijkstra routing table
-- **Node Controls** — add nodes, fail nodes, recover nodes, remove nodes on the fly
-- **Event Stream** — scrolling log of all simulation events with color-coded severity
-
-### 2. `Algorithm Lab` (`/algorithms`)
-Step-through algorithm visualizer:
-- Select any source node and algorithm
-- Step forward/backward through each decision
-- See highlighted edges/nodes change color in real time on the canvas
-- Read the human-readable description of each step at the bottom
-
-### 3. `Network Center` (`/network`)
-Deep network diagnostics:
-- Adjacency matrix view
-- Per-node routing table aggregation
-- Real-time sensor sparklines (Chart.js)
-- Packet log with QoS filtering
-
-### 4. `Rescue Mode` (`/rescue`)
-Disaster response planning:
-- Mark nodes as alert/rescue targets
-- Run TSP Branch-and-Bound to compute optimal patrol order
-- Visualize the optimal route highlighted on the mesh
-- Review states explored vs. pruned (algorithm efficiency view)
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ESP32 Mesh Nodes (N nodes)                                 │
+│  discovery.h → routing.h → forwarding.h → qos_queue.h      │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ ESP-NOW (2.4 GHz)
+┌───────────────────────▼─────────────────────────────────────┐
+│  Gateway ESP32                                               │
+│  resqmesh_node.ino  (IS_GATEWAY = true)                     │
+│  ESP-NOW receive → MQTT publish                             │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ MQTT (TCP 1883)
+┌───────────────────────▼─────────────────────────────────────┐
+│  Mosquitto MQTT Broker                                       │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ subscribe
+┌───────────────────────▼─────────────────────────────────────┐
+│  Flask Backend  (backend/app.py)                            │
+│  • Paho MQTT consumer                                       │
+│  • NetworkX topology graph                                  │
+│  • Heartbeat failure detection                              │
+│  • REST API  /api/topology  /api/nodes  /api/health         │
+└───────────────────────┬─────────────────────────────────────┘
+                        │ WebSocket (Socket.IO)
+┌───────────────────────▼─────────────────────────────────────┐
+│  React Dashboard  (src/)                                    │
+│  • Live graph visualization                                 │
+│  • Simulation engine (Dijkstra, BFS, DFS, MST, TSP)        │
+│  • Hardware data adapter (websocketService.js)              │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Tech Stack
+## Technology Stack
 
-| Layer | Technology |
+### Frontend
+| Package | Version |
 |---|---|
-| **Framework** | React 18 (JSX, Hooks, Context API) |
-| **Routing** | React Router DOM v7 (HashRouter) |
-| **Build Tool** | Vite 8 + TypeScript |
-| **Charts** | Chart.js 4 + react-chartjs-2 |
-| **Rendering** | HTML5 Canvas (2D API) — no WebGL |
-| **Styling** | Vanilla CSS — custom design system with CSS variables, glassmorphism, neon palette |
-| **Fonts** | Google Fonts: Orbitron (display), Share Tech Mono (mono) |
-| **State** | React Context (`AppContext`) — global graph + simulation engine shared across all pages |
+| React + TypeScript | 18 |
+| Vite | ^8 |
+| Chart.js + react-chartjs-2 | ^4 / ^5 |
+| React Router DOM | ^7 |
+| Socket.IO Client | ^4 |
 
----
-
-## Architecture
-
-```
-AppContext (React Context)
-├── MeshGraph           ← graph data structure + all algorithm methods
-│   ├── GraphNode       ← node with sensor data, position, status
-│   └── GraphEdge       ← weighted edge with bandwidth/latency/packet-loss
-└── SimulationEngine    ← real-time tick loop, packet router, alert checker
-    ├── EventLog        ← event bus + listener system
-    └── Packet          ← routed message with QoS / type / TTL / path
-```
-
-The `MeshGraph` and `SimulationEngine` are created once in `App.jsx` and injected via React Context. All pages (`CommandCenter`, `AlgorithmLab`, `NetworkCenter`, `RescueMode`) consume them via the `useApp()` hook.
-
-**Data flow:**
-```
-SimulationEngine.start()
-  ↓  every 1 000 ms
-graph.updateSensors()  →  checkAlerts()  →  notify() → React re-render
-  ↓  every 2 000 ms
-generateRandomPacket() → graph.dijkstra() → route packet → EventLog
-```
-
----
-
-## Algorithms Implemented
-
-All algorithms live in `src/engine/graph.js` and return **step arrays** for visualization.
-
-### Dijkstra's Shortest Path
-```
-graph.dijkstra(sourceId)
-→ { steps[], distances: Map<id,dist>, previous: Map<id,prev> }
-```
-- Priority-queue (min-heap via sort) relaxation
-- Skips `failed` nodes automatically
-- Powers all real-time packet routing and routing tables
-
-### Bellman-Ford
-```
-graph.bellmanFord(sourceId)
-→ { steps[], distances, previous }
-```
-- V−1 iterations over all edges
-- Early-exit on convergence
-- Supports negative-weight edges (useful for RSSI-weighted topologies)
-
-### BFS — Breadth-First Search
-```
-graph.bfs(sourceId)
-→ { steps[], order[], visited: Set }
-```
-- Queue-based level-order traversal
-- Used internally by self-healing to check connectivity after node failure
-
-### DFS — Depth-First Search
-```
-graph.dfs(sourceId)
-→ { steps[], order[], visited: Set }
-```
-- Stack-based traversal
-- Useful for spanning tree / connectivity probing
-
-### Prim's Minimum Spanning Tree
-```
-graph.primMST()
-→ { steps[], mstEdges[], totalWeight }
-```
-- Greedy MST from the first active node
-- Useful for finding the minimum-cost backbone for sensor data aggregation
-
-### TSP — Branch and Bound
-```
-graph.tspBranchAndBound(alertNodeIds)
-→ { steps[], bestPath[], bestCost, statesExplored, statesPruned, distMatrix }
-```
-- Precomputes all-pairs shortest paths via repeated Dijkstra
-- Recursive branch-and-bound with cost pruning
-- Returns optimal rescue patrol order for alert nodes
-
-### Utility Methods
-| Method | Description |
+### Backend
+| Package | Version |
 |---|---|
-| `reconstructPath(previous, targetId)` | Trace back the shortest path from prev-map |
-| `getRoutingTable(nodeId)` | Full Dijkstra forwarding table for a node |
-| `getAdjacencyMatrix()` | Dense matrix representation |
-| `getStats()` | Active nodes, edges, density |
+| Flask | 3.0.3 |
+| Flask-SocketIO | 5.3.6 |
+| Flask-CORS | 4.0.1 |
+| Paho MQTT | 2.1.0 |
+| NetworkX | 3.3 |
+| Eventlet | 0.36.1 |
+| python-dotenv | 1.0.1 |
 
----
-
-## Simulation Engine
-
-`src/engine/simulation.js` manages the live simulation loop.
-
-### Packet Types & QoS
-| Type | Icon | Default QoS |
-|---|---|---|
-| DATA | 📦 | 0 (Low) |
-| HEARTBEAT | 💓 | 0 |
-| SENSOR_ALERT | ⚠️ | 1 (Medium) |
-| ROUTING_UPDATE | 🔄 | 0 |
-| SOS | 🆘 | 2 (High — Neon Orange) |
-
-### Alert Thresholds
-| Sensor | Warning | Critical |
-|---|---|---|
-| Temperature | > 45 °C | > 60 °C |
-| Gas Level | > 400 | > 600 |
-| Battery | < 30 % | < 15 % |
-
-### Self-Healing Flow
-1. `sim.failNode(id)` — sets `node.data.status = 'failed'`
-2. All Dijkstra calls skip failed nodes
-3. After 1 s, BFS re-checks reachability of remaining active nodes
-4. Result logged to Event Stream: `"✅ Self-healing complete: N/M nodes reachable"`
-5. `sim.recoverNode(id)` restores node with fresh battery (80–100%)
+### Firmware
+| Component | Detail |
+|---|---|
+| MCU | ESP32 (any variant with 2.4 GHz WiFi) |
+| Transport | ESP-NOW (250-byte frames, 2.4 GHz) |
+| Sensors | DHT22 (temp/humidity), MQ-2 (gas), voltage divider (battery) |
+| Libraries | ArduinoJson, PubSubClient, DHT sensor library |
+| Broker | Mosquitto 2.x |
 
 ---
 
@@ -226,138 +156,362 @@ graph.tspBranchAndBound(alertNodeIds)
 
 ```
 ResQMesh/
-├── index.html                  # App entry, meta description, title
-├── package.json                # Vite + React + Chart.js + React Router
+│
+├── src/                          # React frontend (TypeScript)
+│   ├── pages/                    # Dashboard pages
+│   ├── engine/                   # Graph & simulation engine
+│   ├── services/                 # websocketService.js, hardwareDataAdapter.js
+│   └── components/               # UI components
+│
+├── backend/                      # Python Flask backend
+│   ├── app.py                    # Main server (MQTT + WebSocket + REST)
+│   ├── mqtt_consumer.py          # MQTT subscriber helper
+│   └── requirements.txt
+│
+├── firmware/
+│   └── resqmesh_node/            # Single sketch flashed on all ESP32s
+│       ├── config.h              # Per-node identity, WiFi, timing constants
+│       ├── mesh_types.h          # MeshFrame wire format, QosPriority enum
+│       ├── discovery.h           # HELLO/HELLO_ACK, neighbor table
+│       ├── routing.h             # Distance Vector routing, reconvergence
+│       ├── forwarding.h          # Multi-hop forwarding, TTL, dedup
+│       ├── qos_queue.h           # Four-priority transmission queue
+│       └── resqmesh_node.ino     # Main sketch (orchestrates all modules)
+│
+├── public/
+├── index.html
+├── package.json
 ├── tsconfig.json
-├── vite.config.*
-└── src/
-    ├── main.jsx                # ReactDOM.render root
-    ├── App.jsx                 # AppContext, routing shell, sidebar nav
-    ├── App.css                 # Global design system (CSS variables, glass panels, animations)
-    ├── index.css               # Base resets and typography
-    ├── style.css               # Additional utility classes
-    ├── engine/
-    │   ├── graph.js            # MeshGraph, GraphNode, GraphEdge, all algorithms
-    │   └── simulation.js       # SimulationEngine, Packet, EventLog
-    └── pages/
-        ├── Landing.jsx         # Animated hero page with canvas particle mesh
-        ├── CommandCenter.jsx   # Live topology + inspector + event log
-        ├── AlgorithmLab.jsx    # Step-through algorithm visualizer
-        ├── NetworkCenter.jsx   # Adjacency matrix, routing tables, sensor charts
-        └── RescueMode.jsx      # TSP rescue planner + route visualizer
+├── .env                          # Frontend environment variables
+├── .env.hardware                 # Hardware-mode overrides
+└── README.md
 ```
 
 ---
 
-## Getting Started
+## Firmware Architecture
+
+The firmware is split into five single-header modules, included in `resqmesh_node.ino`:
+
+```
+resqmesh_node.ino
+│
+├── config.h          Node identity, WiFi/MQTT credentials, all timing constants
+├── mesh_types.h      MeshFrame wire struct, PktType enum, QosPriority enum, frameInit()
+├── discovery.h       HELLO/HELLO_ACK, neighbor table, eviction callback → routing
+├── routing.h         DV table, Bellman-Ford, onNeighborLost(), broadcastDV() → qosQueue
+├── forwarding.h      Dedup cache, TTL check, next-hop send → qosQueue
+└── qos_queue.h       4 × ring-buffer queues, drainOne() called in loop()
+```
+
+### Frame layout (`MeshFrame`, 226 bytes, packed)
+
+| Field | Type | Description |
+|---|---|---|
+| `pktType` | `uint8_t` | PKT\_HELLO / HELLO\_ACK / DV\_UPDATE / SENSOR / HEARTBEAT / ALERT / TOPOLOGY |
+| `srcId` | `char[8]` | Originating node ID |
+| `dstId` | `char[8]` | Destination node ID; `"**"` = broadcast, `"GW"` = gateway |
+| `srcMac` | `uint8_t[6]` | Originating MAC |
+| `rssi` | `int8_t` | Sender-side RSSI (HELLO frames only) |
+| `ttl` | `uint8_t` | Hops remaining (default 7); frame dropped at 0 |
+| `seqNum` | `uint16_t` | Per-source sequence number for deduplication |
+| `payload` | `char[196]` | JSON string payload |
+
+### QoS priority mapping
+
+| Priority | Level | Packet types |
+|---|---|---|
+| `QOS_HIGH` | 0 | `PKT_ALERT` — emergency/SOS |
+| `QOS_MEDIUM` | 1 | `PKT_SENSOR`, `PKT_HEARTBEAT`, `PKT_TOPOLOGY` |
+| `QOS_LOW` | 2 | `PKT_DATA`, `PKT_DV_UPDATE` |
+| `QOS_DEBUG` | 3 | Future diagnostic types |
+
+### Reconvergence sequence on node failure
+
+```
+Neighbor timeout (NEIGHBOR_TIMEOUT_MS = 15 s)
+  └─ discovery: evict neighbor, fire OnNeighborLostCb
+        ├─ routing.onNeighborLost() — poison all routes via dead node
+        │                             _dirty = true
+        └─ publishTopology()       — immediate topology push to backend
+
+  Next routing.tick() (< 10 ms)
+        └─ _dirty → broadcastDV() → qosQueue enqueue DV_UPDATE
+
+  Neighbors receive poison DV_UPDATE
+        └─ handleDvUpdate() → invalidate route → _dirty → re-broadcast
+           (converges hop-by-hop across the mesh)
+```
+
+---
+
+## Installation
 
 ### Prerequisites
-- **Node.js** ≥ 18
-- **npm** ≥ 9
 
-### Installation
+- Node.js 18+
+- Python 3.10+
+- Mosquitto MQTT Broker 2.x
+- Arduino IDE 2.x **or** PlatformIO
+- ESP32 Arduino core (Board Manager: `esp32` by Espressif)
+
+---
+
+## Frontend Setup
+
+Install dependencies:
 
 ```bash
-# Clone the repository
-git clone https://github.com/<your-username>/ResQMesh.git
-cd ResQMesh
-
-# Install dependencies
 npm install
 ```
 
-### Development
+Create `.env` in the project root:
+
+```env
+VITE_BACKEND_URL=http://localhost:5000
+VITE_SIMULATION_MODE=true
+```
+
+> Set `VITE_SIMULATION_MODE=false` when using real ESP32 hardware.
+
+Start the development server:
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+Frontend available at `http://localhost:5173`
 
-### Production Build
+---
+
+## Backend Setup
+
+Navigate to backend:
 
 ```bash
-npm run build
-npm run preview
+cd backend
 ```
+
+Create and activate a virtual environment:
+
+```bash
+# Create
+python -m venv ../venv
+
+# Windows
+..\venv\Scripts\activate
+
+# Linux / macOS
+source ../venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Configure backend (optional — defaults work out of the box):
+
+```bash
+# backend/.env (auto-loaded by python-dotenv)
+MQTT_BROKER=localhost
+MQTT_PORT=1883
+SECRET_KEY=resqmesh-secret
+```
+
+Run backend:
+
+```bash
+python app.py
+```
+
+Backend available at `http://localhost:5000`
 
 ---
 
-## Usage Guide
+## MQTT Setup
 
-### Creating a Mesh Network
-1. Launch the app → Click **"Launch Simulation"** on the landing page
-2. The default 5-node pentagon mesh (Nodes A–E) is loaded automatically
-3. Click **`+ Node`** in the Command Center to add new nodes (auto-wired to 2 random existing nodes)
-4. **Drag** any node on the canvas to reposition it
+### Install Mosquitto
 
-### Simulating Failures
-1. Click any node on the canvas to select it
-2. Use **`✕ Fail`** to take the node offline — watch routes re-calculate
-3. Use **`↻ Recover`** to bring it back online
-4. Monitor the Event Stream for self-healing notifications
+**Windows:** Download from [mosquitto.org](https://mosquitto.org/download/) and install.
 
-### Running Algorithms
-1. Navigate to **Algorithm Lab**
-2. Pick a source node from the dropdown
-3. Select an algorithm (Dijkstra / Bellman-Ford / BFS / DFS / Prim's)
-4. Click **▶ Run** then use **← Step** / **Step →** to walk through each decision
-5. The canvas highlights currently visited nodes and relaxed edges in real time
+**Linux:**
+```bash
+sudo apt install mosquitto mosquitto-clients
+```
 
-### Rescue Planning (TSP)
-1. Navigate to **Rescue Mode**
-2. Toggle nodes as **alert targets** using the node list
-3. Click **Run TSP** — Branch & Bound finds the optimal patrol order
-4. The optimal route is drawn on the topology canvas
-5. Stats show total cost, states explored, and states pruned
+### Start the broker
+
+**Windows:**
+```bash
+mosquitto
+```
+
+**Linux:**
+```bash
+sudo systemctl start mosquitto
+sudo systemctl enable mosquitto
+```
+
+### Verify
+
+```bash
+mosquitto_sub -h localhost -t "#" -v
+```
+
+Default broker address: `localhost:1883`
 
 ---
 
-## Key Concepts
+## Firmware Setup
 
-### Normalized Coordinates
-Nodes store positions as `(nx, ny) ∈ [0,1]²` (normalized fractions) so the graph scales to any canvas size without distortion. Pixel positions are computed on every render frame via:
-```js
-x = pad + nx * (canvasWidth  - 2*pad)
-y = pad + ny * (canvasHeight - 2*pad)
+### Arduino IDE
+
+1. Open **Arduino IDE 2.x**
+2. Install board: **Tools → Board Manager → search "esp32" → install Espressif Systems**
+3. Install libraries via **Library Manager**:
+   - `ArduinoJson` by Benoit Blanchon
+   - `PubSubClient` by Nick O'Leary
+   - `DHT sensor library` by Adafruit
+4. Open `firmware/resqmesh_node/resqmesh_node.ino`
+
+### Configure each node
+
+Edit `config.h` before flashing:
+
+```cpp
+// ── Per-node identity ─────────────────────────────────────────
+#define NODE_ID     "A"         // Unique ID (≤ 7 chars), e.g. "A", "B", "GW"
+#define NODE_LABEL  "Node A"    // Display name
+
+// ── Role ──────────────────────────────────────────────────────
+#define IS_GATEWAY  false       // true only for the gateway node
+
+// ── WiFi / MQTT (gateway only) ────────────────────────────────
+#define WIFI_SSID     "YOUR_SSID"
+#define WIFI_PASSWORD "YOUR_PASSWORD"
+#define MQTT_BROKER   "192.168.1.100"   // IP of the Mosquitto host
+#define MQTT_PORT     1883
 ```
 
-### Graph Density
-```
-density = (2 × |E|) / (|V| × (|V| − 1))
-```
-Displayed as a percentage in the Command Center analytics strip.
+### Timing constants (all in `config.h`)
 
-### QoS Color Coding
-| QoS | Color | Use Case |
+| Constant | Default | Purpose |
 |---|---|---|
-| 2 | 🟠 `#FF653F` Neon Orange | SOS / Emergency |
-| 1 | 🟡 `#FFC85C` Warm Yellow | Sensor Alert |
-| 0 | 🩵 `#00E5FF` Cyan | Routine DATA / HEARTBEAT |
+| `HELLO_INTERVAL_MS` | 5 000 ms | HELLO broadcast interval |
+| `NEIGHBOR_TIMEOUT_MS` | 15 000 ms | Evict neighbor after this silence |
+| `DV_UPDATE_INTERVAL_MS` | 6 000 ms | Periodic DV broadcast interval |
+| `ROUTE_TIMEOUT_MS` | 20 000 ms | Invalidate route after this age |
+| `HEARTBEAT_INTERVAL_MS` | 2 000 ms | Heartbeat TX interval |
+| `SENSOR_INTERVAL_MS` | 2 000 ms | Sensor publish interval |
+| `TOPOLOGY_INTERVAL_MS` | 10 000 ms | Topology report interval |
+| `QOS_QUEUE_DEPTH` | 8 | Slots per priority ring buffer |
+| `QOS_DRAIN_BUDGET_MS` | 8 ms | Max QoS drain time per loop() call |
+
+### Flash order
+
+1. Flash **gateway node** first — note its MAC address from Serial Monitor
+2. Flash **mesh nodes** — set `IS_GATEWAY false`, unique `NODE_ID` per node
+3. Power all devices
+4. Open Serial Monitor (115200 baud) to observe discovery, routing, and forwarding logs
 
 ---
 
-## Roadmap
+## Running in Simulation Mode
 
-- [ ] OSPF / RIP protocol simulation
-- [ ] Multi-hop packet animation along the full path (currently segment-interpolated)
-- [ ] Export topology as JSON / import custom topologies
-- [ ] Battery depletion failure events (auto-fail when battery < 5%)
-- [ ] Kruskal's MST implementation for comparison with Prim's
-- [ ] A* pathfinding with Euclidean heuristic
-- [ ] WebSocket-based multi-user collaborative topology editing
-- [ ] Mobile responsive layout for tablet viewing
+No hardware required.
+
+1. Set `.env`: `VITE_SIMULATION_MODE=true`
+2. Start backend: `cd backend && python app.py`
+3. Start frontend: `npm run dev`
+4. Open `http://localhost:5173`
+
+The dashboard generates simulated nodes, sensor readings, packets, and routing events using the built-in graph engine.
+
+---
+
+## Running in Hardware Mode
+
+1. Set `.env`: `VITE_SIMULATION_MODE=false`
+2. Start Mosquitto broker
+3. Start Flask backend: `cd backend && python app.py`
+4. Flash and power all ESP32 nodes (gateway first)
+5. Start frontend: `npm run dev`
+6. Open `http://localhost:5173`
+
+The dashboard automatically receives live topology, sensor data, and failure events via WebSocket.
+
+---
+
+## MQTT Topics
+
+All topics use the scheme `resqmesh/{node_id}/{type}`.
+
+| Topic | Direction | Payload |
+|---|---|---|
+| `resqmesh/{node_id}/sensor` | Node → Backend | `{nodeId, temperature, humidity, gasLevel, battery, rssi}` |
+| `resqmesh/{node_id}/heartbeat` | Node → Backend | `{nodeId, ts}` |
+| `resqmesh/{node_id}/alert` | Node → Backend | `{nodeId, type, severity, message}` |
+| `resqmesh/{node_id}/topology` | Node → Backend | `{nodeId, neighbours[], routes[]}` |
+| `resqmesh/network/events` | Backend → All | `{type, nodeId, message, ts}` |
+
+---
+
+## REST API
+
+Base URL: `http://localhost:5000`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/topology` | Full graph: nodes + edges |
+| `GET` | `/api/nodes` | All known nodes with current state |
+| `GET` | `/api/nodes/{id}` | Single node details |
+| `GET` | `/api/health` | Backend health check |
+| `POST` | `/api/nodes/{id}/fail` | Simulate node failure |
+| `POST` | `/api/nodes/{id}/recover` | Simulate node recovery |
+
+---
+
+## WebSocket Events
+
+Namespace: `/` (Socket.IO)
+
+| Event | Direction | Payload |
+|---|---|---|
+| `topology_update` | Server → Client | Updated graph topology |
+| `node_update` | Server → Client | Single node state change |
+| `sensor_data` | Server → Client | Live sensor reading |
+| `alert` | Server → Client | Emergency alert |
+| `node_failure` | Server → Client | Node failure detected |
+| `node_recovery` | Server → Client | Node back online |
+
+---
+
+## Demo Workflow
+
+1. Start all ESP32 nodes and observe automatic mesh formation in the Serial Monitor.
+2. Open the dashboard — live nodes appear as the topology is reported.
+3. Disconnect a node (cut power or block RF) — watch the backend detect the heartbeat timeout, the firmware poison-reverse propagate, and the topology update within one DV cycle.
+4. Reconnect the node — observe automatic route reconvergence and topology recovery.
+5. Trigger a gas alert (bring MQ-2 near smoke) — HIGH-priority alert frame is queued and forwarded to the gateway with highest QoS.
+6. Open Rescue Mode on the dashboard — run Dijkstra or TSP to compute optimal rescue routes over the live topology.
+
+---
+
+## Future Work
+
+- LoRa integration for long-range links
+- Drone relay nodes
+- TinyML-based failure prediction
+- Reinforcement-learning adaptive routing
+- Satellite backhaul support
+- Hybrid BLE / LoRa / WiFi mesh
+- Encrypted mesh frames (ESP-NOW CCM)
 
 ---
 
 ## License
 
-This project is for academic and educational purposes.  
-MIT License — feel free to fork, extend, and learn from it.
-
----
-
-<div align="center">
-  <strong>ResQMesh</strong> — Built for graph theory, networking, and disaster intelligence education.<br/>
-  <em>◈ RQM — Rescue. Route. Recover.</em>
-</div>
+Academic / Educational Use.  
+Project developed as part of an engineering disaster-response and networking research initiative.
