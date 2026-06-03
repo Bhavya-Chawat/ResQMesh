@@ -197,7 +197,7 @@ export class SimulationEngine {
       if (node.data.temperature > 60) {
         this.eventLog.add('critical', `HIGH TEMP: ${node.label} — ${node.data.temperature.toFixed(1)}°C`);
       }
-      if (node.data.gasLevel > 600) {
+      if (node.data.gasLevel > 210) {
         this.eventLog.add('critical', `GAS ALERT: ${node.label} — Level ${node.data.gasLevel.toFixed(0)}`);
       }
       if (node.data.battery < 15) {

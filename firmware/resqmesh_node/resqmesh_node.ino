@@ -72,7 +72,7 @@ void mqttReconnect() {
 }
 
 void mqttPublishJson(const char* msgType, JsonDocument& doc) {
-  char buf[300];
+  char buf[512];
   serializeJson(doc, buf);
   mqttClient.publish(topicFor(msgType).c_str(), buf);
 }
@@ -256,14 +256,17 @@ void publishTopology() {
     nb["id"]      = neighbors[i].nodeId;
     nb["rssi"]    = neighbors[i].rssi;
     nb["latency"] = max(1, 110 + (int)neighbors[i].rssi); // = link cost
+#if IS_GATEWAY
     char macStr[18];
     snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
              neighbors[i].mac[0], neighbors[i].mac[1], neighbors[i].mac[2],
              neighbors[i].mac[3], neighbors[i].mac[4], neighbors[i].mac[5]);
     nb["mac"] = macStr;
+#endif
   }
 
-  // ── Routing table (full DV table for backend graph view) ─────────────────
+  // ── Routing table (full DV table for backend graph view - Gateway only) ──
+#if IS_GATEWAY
   JsonArray routes = doc.createNestedArray("routes");
   RouteEntry routesBuf[MAX_ROUTES];
   uint8_t rCnt = routing.getRoutes(routesBuf, MAX_ROUTES);
@@ -276,6 +279,7 @@ void publishTopology() {
     ro["hopCount"] = r.hopCount;
     ro["valid"]    = r.valid;
   }
+#endif
 
 #if IS_GATEWAY
   mqttPublishJson("topology", doc);

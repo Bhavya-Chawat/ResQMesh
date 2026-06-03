@@ -70,9 +70,9 @@ export function applyNodeUpdate(graphNode, backendNode) {
     graphNode.data.status = src.status;
   }
 
-  // Position
-  if (backendNode.nx !== undefined) graphNode.nx = Number(backendNode.nx);
-  if (backendNode.ny !== undefined) graphNode.ny = Number(backendNode.ny);
+  // Position - Keep local dragging positions, do not let backend override
+  // if (backendNode.nx !== undefined) graphNode.nx = Number(backendNode.nx);
+  // if (backendNode.ny !== undefined) graphNode.ny = Number(backendNode.ny);
 
   // Label
   if (backendNode.label) graphNode.label = backendNode.label;
@@ -126,7 +126,7 @@ export function applyTopologySnapshot(graph, snapshot, sim) {
       existing.weight = Number(be.weight) || existing.weight;
       Object.assign(existing.data, be.data || {});
     } else {
-      graph.addEdge(src, tgt, Number(be.weight) || 10);
+      graph.addEdge(src, tgt, Number(be.weight) || 2);
     }
   }
 }

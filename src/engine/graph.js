@@ -61,9 +61,9 @@ export class GraphNode {
 
     // Determine status based on thresholds
     if (this.data.status === 'failed') return;
-    if (this.data.temperature > 60 || this.data.gasLevel > 600 || this.data.battery < 15) {
+    if (this.data.temperature > 60 || this.data.gasLevel > 210 || this.data.battery < 15) {
       this.data.status = 'critical';
-    } else if (this.data.temperature > 45 || this.data.gasLevel > 400 || this.data.battery < 30) {
+    } else if (this.data.temperature > 45 || this.data.gasLevel > 160 || this.data.battery < 30) {
       this.data.status = 'warning';
     } else {
       this.data.status = 'active';
@@ -270,6 +270,7 @@ export class MeshGraph {
   }
 
   updateSensors() {
+    if (this.isHardware) return;
     for (const [, node] of this.nodes) {
       if (node.data.status !== 'failed') {
         node.updateSensors();

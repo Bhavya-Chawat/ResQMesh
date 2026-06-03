@@ -6,13 +6,9 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Node identity ─────────────────────────────────────────────────────────────
-#define NODE_ID     "A"        // Unique ID: single char or short string (≤7 chars)
-#define NODE_LABEL  "Node A"   // Human-readable display name
-
-// ── Role ─────────────────────────────────────────────────────────────────────
-// true  = Gateway: runs WiFi + MQTT + ESP-NOW receive
-// false = Mesh node: runs ESP-NOW only (no WiFi credentials needed)
-#define IS_GATEWAY  true
+#define NODE_ID     "D"
+#define NODE_LABEL  "Node D"
+#define IS_GATEWAY  false   // Set to false for Node B
 
 // ── WiFi / MQTT (gateway only — ignored on mesh nodes) ───────────────────────
 #define WIFI_SSID      "Madhur"
@@ -25,7 +21,7 @@
 // ── ESP-NOW channel ───────────────────────────────────────────────────────────
 // Must match on all nodes in the mesh. Gateway uses WIFI_AP_STA so its channel
 // is locked by the AP; mesh nodes will hop to this channel automatically.
-#define ESPNOW_CHANNEL  1
+#define ESPNOW_CHANNEL  6
 
 // ── Sensor pins ───────────────────────────────────────────────────────────────
 #define DHT_PIN       4

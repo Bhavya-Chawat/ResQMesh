@@ -48,6 +48,10 @@ class DataSourceManager {
     this._connectionStatus = 'disconnected';
     this.expectedNodes = 5;       // default expected hardware nodes count
     this._simGraphBackup = null;  // backup of simulation graph when switching to hardware mode
+    this._pendingTopologySnapshot = null;
+    this._pendingNodeStatuses = new Map(); // nodeId -> status
+    this._pendingNodeFailures = new Set(); // nodeIds
+    this._topologyInterval = null;
   }
 
   // ── Public getters ──────────────────────────────────────────────────
@@ -111,6 +115,7 @@ class DataSourceManager {
   _startSimulationMode() {
     // Restore simulation graph from backup if it exists, otherwise ensure we have nodes
     if (this._graph) {
+      this._graph.isHardware = false;
       if (this._simGraphBackup) {
         this._graph.nodes = new Map(this._simGraphBackup.nodes);
         this._graph.edges = [...this._simGraphBackup.edges];
@@ -136,6 +141,43 @@ class DataSourceManager {
   }
 
   // ── Hardware mode ────────────────────────────────────────────────────
+
+  _flushTopologyUpdates() {
+    if (!this._graph) return;
+
+    let changed = false;
+
+    // 1. Apply topology snapshot if any is pending
+    if (this._pendingTopologySnapshot) {
+      applyTopologySnapshot(this._graph, this._pendingTopologySnapshot, this._sim);
+      this._pendingTopologySnapshot = null;
+      changed = true;
+    }
+
+    // 2. Apply pending node failures
+    for (const nodeId of this._pendingNodeFailures) {
+      const node = this._graph.nodes.get(nodeId);
+      if (node) {
+        node.data.status = 'failed';
+        changed = true;
+      }
+    }
+    this._pendingNodeFailures.clear();
+
+    // 3. Apply pending node statuses
+    for (const [nodeId, status] of this._pendingNodeStatuses.entries()) {
+      const node = this._graph.nodes.get(nodeId);
+      if (node && node.data.status !== status) {
+        node.data.status = status;
+        changed = true;
+      }
+    }
+    this._pendingNodeStatuses.clear();
+
+    if (changed) {
+      this._notify?.();
+    }
+  }
 
   _startHardwareMode() {
     // Backup simulation graph if not already backed up
@@ -166,10 +208,21 @@ class DataSourceManager {
 
     // Clear current graph nodes and edges so hardware mode starts with 0 nodes until detected in real-time
     if (this._graph) {
+      this._graph.isHardware = true;
       this._graph.nodes.clear();
       this._graph.edges = [];
       this._graph.adjacencyList.clear();
     }
+
+    // Reset pending buffers
+    this._pendingTopologySnapshot = null;
+    this._pendingNodeStatuses.clear();
+    this._pendingNodeFailures.clear();
+
+    // Start 5-second graph visual refresh timer
+    this._topologyInterval = setInterval(() => {
+      this._flushTopologyUpdates();
+    }, 5000);
 
     this._connectionStatus = 'connecting';
     websocketService.connect();
@@ -199,32 +252,76 @@ class DataSourceManager {
       }),
 
       websocketService.on('topology_update', (data) => {
-        applyTopologySnapshot(graph, data, sim);
-        notify?.();
+        if (sim && !sim.isRunning) return;
+        // Buffer visual topology structure
+        this._pendingTopologySnapshot = data;
+
+        // But immediately update sensor readings for existing nodes in real-time
+        if (data && data.nodes) {
+          for (const backendNode of data.nodes) {
+            const nodeId = String(backendNode.id);
+            const existing = graph.nodes.get(nodeId);
+            if (existing && backendNode.data) {
+              const src = backendNode.data;
+              if (src.temperature !== undefined) existing.data.temperature = Number(src.temperature);
+              if (src.humidity !== undefined) existing.data.humidity = Number(src.humidity);
+              if (src.gasLevel !== undefined) existing.data.gasLevel = Number(src.gasLevel);
+              if (src.battery !== undefined) existing.data.battery = Number(src.battery);
+            }
+          }
+        }
+        notify?.(); // Real-time notify for UI table/inspector
       }),
 
       websocketService.on('node_update', (event) => {
-        handleNodeUpdate(graph, event, sim);
-        notify?.();
+        if (sim && !sim.isRunning) return;
+        
+        const nodeId = String(event.nodeId);
+        let existing = graph.nodes.get(nodeId);
+
+        // If the node exists, update its sensor data in real-time
+        if (existing && event.node?.data) {
+          const src = event.node.data;
+          if (src.temperature !== undefined) existing.data.temperature = Number(src.temperature);
+          if (src.humidity !== undefined) existing.data.humidity = Number(src.humidity);
+          if (src.gasLevel !== undefined) existing.data.gasLevel = Number(src.gasLevel);
+          if (src.battery !== undefined) existing.data.battery = Number(src.battery);
+          
+          // Buffer the visual status update
+          if (src.status) {
+            this._pendingNodeStatuses.set(nodeId, src.status);
+          }
+        } else {
+          // New node: initialize it immediately so it receives numeric updates,
+          // but its structural representation on the graph will update
+          handleNodeUpdate(graph, event, sim);
+        }
+        
+        notify?.(); // Real-time notify for UI table/inspector
       }),
 
       websocketService.on('heartbeat', (event) => {
-        // Heartbeat ack — node is alive; update is handled server-side.
-        // We just log and re-render if status changed.
+        if (sim && !sim.isRunning) return;
         notify?.();
       }),
 
       websocketService.on('node_failure', (event) => {
-        handleNodeFailure(graph, event, sim);
+        if (sim && !sim.isRunning) return;
+        if (event?.nodeId) {
+          this._pendingNodeFailures.add(String(event.nodeId));
+          sim?.eventLog?.add('critical', event.message || `NODE FAILURE: ${event.nodeId}`);
+        }
         notify?.();
       }),
 
       websocketService.on('alert', (event) => {
+        if (sim && !sim.isRunning) return;
         handleAlert(graph, event, sim);
         notify?.();
       }),
 
       websocketService.on('stats_update', (statsPayload) => {
+        if (sim && !sim.isRunning) return;
         applyStatsUpdate(sim, statsPayload);
         notify?.();
       }),
@@ -236,6 +333,12 @@ class DataSourceManager {
   }
 
   _stopHardwareMode() {
+    // Clear visual refresh timer
+    if (this._topologyInterval) {
+      clearInterval(this._topologyInterval);
+      this._topologyInterval = null;
+    }
+
     // Unregister all WebSocket listeners
     for (const unsub of this._wsUnsubs) unsub();
     this._wsUnsubs = [];

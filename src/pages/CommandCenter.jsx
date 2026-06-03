@@ -15,7 +15,7 @@ export default function CommandCenter() {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   const dragRef = useRef(null);
   const animRef = useRef(null);
   const timeRef = useRef(0);
@@ -23,6 +23,10 @@ export default function CommandCenter() {
   const [preset, setPreset] = useState('ring');
   const [nodeCount, setNodeCount] = useState(5);
   const [expectedHwNodes, setExpectedHwNodes] = useState(dataSourceManager?.expectedNodes || 5);
+  
+  // Custom states for architectural redesign
+  const [isAdjusting, setIsAdjusting] = useState(false);
+  const [tableData, setTableData] = useState([]);
 
   const handleResetMesh = () => {
     graph.resetToPreset(preset, nodeCount);
@@ -31,9 +35,11 @@ export default function CommandCenter() {
     setTick(t => t + 1);
   };
 
-  // Auto-start simulation
+  // Auto-start simulation (only in simulation mode)
   useEffect(() => {
-    if (!sim.isRunning) sim.start();
+    if (dataSourceManager && !dataSourceManager.isHardware && !sim.isRunning) {
+      sim.start();
+    }
   }, [sim]);
 
   // Subscribe for re-renders
@@ -41,6 +47,21 @@ export default function CommandCenter() {
     const unsub = sim.subscribe(() => setTick(t => t + 1));
     return unsub;
   }, [sim]);
+
+  // Live real-time update of the sub-servers data table
+  useEffect(() => {
+    const subs = Array.from(graph.nodes.entries())
+      .filter(([id]) => id !== 'A')
+      .map(([id, node]) => ({
+        id,
+        label: dataSourceManager?.isHardware ? `Sub-Server ${id}` : node.label,
+        temperature: node.data.temperature,
+        humidity: node.data.humidity,
+        gasLevel: node.data.gasLevel,
+        status: node.data.status,
+      }));
+    setTableData(subs);
+  }, [graph, dataSourceManager, tick]);
 
   // ── Main Canvas Loop ──────────────────────────────────────────────
   useEffect(() => {
@@ -146,18 +167,21 @@ export default function CommandCenter() {
         const status = node.data.status;
         const { x, y } = nodePos(node, w, h, PAD);
 
+        const isGateway = id === 'A' && dataSourceManager?.isHardware;
+
         // Sync legacy .x/.y for algorithm pages that still use them
         node.x = x;
         node.y = y;
 
         // Pulse glow
         let glowColor;
-        if (status === 'failed') glowColor = 'rgba(255,23,68,0.35)';
+        if (isGateway) glowColor = 'rgba(255,215,0,0.45)'; // Golden glow for Gateway Main Server
+        else if (status === 'failed') glowColor = 'rgba(255,23,68,0.35)';
         else if (status === 'critical') glowColor = 'rgba(255,101,63,0.45)';
         else if (status === 'warning') glowColor = 'rgba(255,200,92,0.35)';
         else glowColor = 'rgba(0,229,255,0.22)';
 
-        const pulseR = (isSel ? 28 : 22) + Math.sin(t * 2.2 + node.nx * 6.28) * 5;
+        const pulseR = (isSel ? 30 : 24) + Math.sin(t * 2.2 + node.nx * 6.28) * 5;
         const grad = ctx.createRadialGradient(x, y, 0, x, y, pulseR);
         grad.addColorStop(0, glowColor);
         grad.addColorStop(1, 'transparent');
@@ -167,9 +191,10 @@ export default function CommandCenter() {
         ctx.fill();
 
         // Node body
-        const r = isSel ? 14 : 10;
+        const r = isSel ? (isGateway ? 18 : 14) : (isGateway ? 14 : 10);
         let fillColor;
-        if (status === 'failed') fillColor = '#FF1744';
+        if (isGateway) fillColor = '#FFD700'; // Gold color for Gateway Main Server!
+        else if (status === 'failed') fillColor = '#FF1744';
         else if (status === 'critical') fillColor = '#FF653F';
         else if (status === 'warning') fillColor = '#FFC85C';
         else fillColor = '#00E5FF';
@@ -192,10 +217,18 @@ export default function CommandCenter() {
         }
 
         // ESP32 label
+        let labelText = node.label;
+        if (dataSourceManager?.isHardware) {
+          if (id === 'A') {
+            labelText = "Main Server (Gateway)";
+          } else {
+            labelText = `Sub-Server ${id}`;
+          }
+        }
         ctx.font = 'bold 10px "Orbitron", monospace';
-        ctx.fillStyle = '#f0eaf8';
+        ctx.fillStyle = isGateway ? '#FFD700' : '#f0eaf8';
         ctx.textAlign = 'center';
-        ctx.fillText(node.label, x, y - r - 8);
+        ctx.fillText(labelText, x, y - r - 8);
 
         // Alert blink
         if (status === 'critical' || status === 'warning') {
@@ -408,6 +441,25 @@ export default function CommandCenter() {
               onMouseLeave={handleMouseUp}
               style={{ cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
             />
+            {isAdjusting && (
+              <div style={{
+                position: 'absolute',
+                top: 0, left: 0, right: 0, bottom: 0,
+                background: 'rgba(10,6,24,0.85)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                zIndex: 10,
+                backdropFilter: 'blur(4px)',
+                fontFamily: 'var(--font-display)',
+                color: 'var(--neon-orange)'
+              }}>
+                <div className="glow-text-orange" style={{ fontSize: '1.2rem', fontWeight: 'bold', letterSpacing: 2, marginBottom: 8 }}>
+                  Adjusting network layout...
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Freezing updates for 2 seconds
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -426,23 +478,110 @@ export default function CommandCenter() {
                 </button>
               </div>
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--neon-orange)', marginBottom: 8 }}>
-                {sel.label}
+                {dataSourceManager?.isHardware ? (sel.id === 'A' ? "Main Server" : `Sub-Server ${sel.id}`) : sel.label}
               </h3>
-              <span className={`badge ${sel.data.status === 'active' ? 'badge-green' : sel.data.status === 'warning' ? 'badge-yellow' : 'badge-red'}`}>
+              <span className={`badge ${sel.data.status === 'active' ? 'badge-green' : sel.data.status === 'warning' ? 'badge-yellow' : 'badge-red'}`} style={{ marginBottom: 12 }}>
                 {sel.data.status.toUpperCase()}
               </span>
-              <table className="data-table" style={{ marginTop: 12 }}>
+
+              {/* Node-specific sensor values displayed in a dedicated toggle popup card */}
+              <div className="glass-panel" style={{ padding: '12px 14px', borderRadius: 8, border: '1px solid rgba(255,101,63,0.15)', background: 'rgba(10,6,24,0.4)', marginBottom: 16 }}>
+                <div style={{ fontFamily: 'var(--font-display)', color: 'var(--neon-orange)', fontSize: '0.72rem', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  📡 {sel.id === 'A' ? 'Main Server Metrics' : `Sub-Server ${sel.id} Sensors`}
+                </div>
+                <table className="data-table">
+                  <tbody>
+                    <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
+                    <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
+                    <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 210 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="section-header" style={{ marginTop: 16 }}>Detailed Info</div>
+              <table className="data-table" style={{ marginBottom: 16 }}>
                 <tbody>
-                  <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
-                  <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
-                  <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 600 ? '#FF1744' : '#FFC85C' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
-                  <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>
+                  {sel.id !== 'A' && <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>}
                   <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
                   <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
                   <tr><td>Throughput</td><td>{sel.data.throughput.toFixed(0)} kbps</td></tr>
                   <tr><td>Signal</td><td>{sel.data.signalQuality.toFixed(0)}%</td></tr>
                 </tbody>
               </table>
+
+              {/* Edge Weight Editor */}
+              <div className="section-header" style={{ marginTop: 16 }}>Link Weights (Default: 2)</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+                {graph.edges.filter(e => e.source === sel.id || e.target === sel.id).length > 0 ? (
+                  graph.edges.filter(e => e.source === sel.id || e.target === sel.id).map(edge => {
+                    const peerId = edge.source === sel.id ? edge.target : edge.source;
+                    const peerLabel = dataSourceManager?.isHardware ? `Sub-Server ${peerId}` : (graph.nodes.get(peerId)?.label || peerId);
+                    return (
+                      <div key={`${edge.source}-${edge.target}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
+                        <span style={{ color: 'var(--text-secondary)' }}>Link to {peerLabel}:</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          defaultValue={edge.weight}
+                          style={{
+                            width: 60,
+                            background: 'rgba(0,0,0,0.6)',
+                            color: 'var(--neon-orange)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 4,
+                            padding: '2px 6px',
+                            fontFamily: 'var(--font-mono)',
+                            textAlign: 'center'
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') e.target.blur();
+                          }}
+                          onBlur={async (e) => {
+                            const newWeight = Number(e.target.value);
+                            if (isNaN(newWeight) || newWeight < 1) return;
+                            
+                            setIsAdjusting(true);
+                            const prevIsRunning = sim.isRunning;
+                            sim.stop();
+
+                            edge.weight = newWeight;
+                            edge.data.latency = newWeight;
+
+                            if (dataSourceManager?.isHardware) {
+                              try {
+                                await fetch('/api/edges/weight', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({
+                                    source: edge.source,
+                                    target: edge.target,
+                                    weight: newWeight
+                                  })
+                                });
+                              } catch (err) {
+                                console.error("Failed to update edge weight:", err);
+                              }
+                            }
+
+                            setTimeout(() => {
+                              setIsAdjusting(false);
+                              if (prevIsRunning) {
+                                sim.start();
+                              }
+                              setTick(t => t + 1);
+                            }, 2000);
+                          }}
+                        />
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', padding: 8 }}>
+                    No active connections
+                  </div>
+                )}
+              </div>
 
               <div className="section-header" style={{ marginTop: 16 }}>Routing Table</div>
               <div className="routing-table-wrap">
@@ -477,6 +616,53 @@ export default function CommandCenter() {
                 {ev.message}
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* Sub-Servers Data Table */}
+        <div className="subnodes-table-area panel glass-panel">
+          <div className="section-header" style={{ marginBottom: 8 }}>Distributed Sub-Servers Monitor</div>
+          <div className="panel-scroll" style={{ flex: 1 }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Sub-Server ID</th>
+                  <th>Temperature</th>
+                  <th>Humidity</th>
+                  <th>Gas Level</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableData.length > 0 ? (
+                  tableData.map(node => (
+                    <tr key={node.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                      <td style={{ color: 'var(--neon-cyan)', fontWeight: 'bold' }}>Sub-Server {node.id}</td>
+                      <td style={{ color: node.temperature > 60 ? '#FF1744' : '#FFC85C' }}>
+                        {node.temperature !== undefined ? `${node.temperature.toFixed(1)}°C` : 'N/A'}
+                      </td>
+                      <td>
+                        {node.humidity !== undefined ? `${node.humidity.toFixed(1)}%` : 'N/A'}
+                      </td>
+                      <td style={{ color: node.gasLevel > 210 ? '#FF1744' : '#FFC85C' }}>
+                        {node.gasLevel !== undefined ? node.gasLevel.toFixed(0) : 'N/A'}
+                      </td>
+                      <td>
+                        <span className={`badge ${node.status === 'active' ? 'badge-green' : node.status === 'warning' ? 'badge-yellow' : 'badge-red'}`}>
+                          {node.status ? node.status.toUpperCase() : 'UNKNOWN'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                      No active Sub-Servers detected in the network
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
 
