@@ -14,9 +14,7 @@
 //       – Broadcast-destined frames ("**", "GW") are also deduplicated
 //       – Gateway re-delivers to MQTT; intermediate nodes re-send to next hop
 //
-// Does NOT implement: QoS priority queues (next layer).
-//
-// Depends on: routing.h, discovery.h, mesh_types.h, config.h
+// Depends on: routing.h, discovery.h, mesh_types.h, qos_queue.h, config.h
 // ══════════════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -25,6 +23,7 @@
 #include "mesh_types.h"
 #include "discovery.h"
 #include "routing.h"
+#include "qos_queue.h"
 
 // ── Deduplication cache ───────────────────────────────────────────────────────
 
@@ -144,13 +143,15 @@ public:
       return false;
     }
 
-    esp_err_t err = esp_now_send(nhMac, (const uint8_t*)&fwd, sizeof(fwd));
+    // Enqueue through QoS layer — priority inferred from frame.pktType.
+    // drainOne() in loop() will call esp_now_send() in priority order.
+    bool ok = qosQueue.enqueue(nhMac, fwd);
 
     const NeighborEntry* nb = _disc->findByMac(nhMac);
-    Serial.printf("[Fwd] FWD src=%s dst=%s seq=%u ttl=%u → %s  err=%d\n",
+    Serial.printf("[Fwd] ENQUEUE src=%s dst=%s seq=%u ttl=%u → %s  ok=%d\n",
                   fwd.srcId, fwd.dstId, fwd.seqNum, fwd.ttl,
-                  nb ? nb->nodeId : "??", err);
-    return (err == ESP_OK);
+                  nb ? nb->nodeId : "??", ok);
+    return ok;
   }
 
 private:

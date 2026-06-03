@@ -45,3 +45,7 @@
 
 // ── Discovery limits ─────────────────────────────────────────────────────────
 #define MAX_NEIGHBORS  10   // Maximum entries in the neighbor table
+
+// ── QoS limits ───────────────────────────────────────────────────────────────
+#define QOS_QUEUE_DEPTH       8   // Slots per priority ring buffer
+#define QOS_DRAIN_BUDGET_MS   8   // Max ms spent draining queues per loop() call

@@ -8,8 +8,8 @@
 //   • Dynamic peer registration — ESP-NOW peer added on first contact
 //   • Neighbor table  — per-neighbor: ID, MAC, RSSI, last-seen timestamp
 //   • Periodic cleanup — entries older than NEIGHBOR_TIMEOUT_MS are evicted
-//
-// Does NOT implement: routing, forwarding, QoS, topology propagation.
+//   • Eviction callback — notifies routing layer on neighbor loss for
+//                          immediate route invalidation and reconvergence
 // ══════════════════════════════════════════════════════════════════════════════
 
 #pragma once
@@ -30,6 +30,12 @@ struct NeighborEntry {
   bool    active;                    // Slot in use
 };
 
+// ── Eviction callback ─────────────────────────────────────────────────────────
+// Signature: void cb(const char* evictedNodeId)
+// Registered by the routing layer so it can invalidate routes immediately
+// when a neighbor times out, without a circular include dependency.
+typedef void (*OnNeighborLostCb)(const char* nodeId);
+
 // ── Discovery module ──────────────────────────────────────────────────────────
 
 class Discovery {
@@ -44,8 +50,13 @@ public:
     memset(_table, 0, sizeof(_table));
     _lastHello   = 0;
     _lastCleanup = 0;
+    _onLostCb    = nullptr;
     Serial.printf("[Discovery] Ready — node %s\n", _myId);
   }
+
+  // Register a callback invoked synchronously when a neighbor is evicted.
+  // Call before the first tick(). Only one callback is supported.
+  void registerOnNeighborLost(OnNeighborLostCb cb) { _onLostCb = cb; }
 
   // ── Tick ─────────────────────────────────────────────────────────────────
   // Call from loop(). Handles periodic HELLO broadcasts and table cleanup.
@@ -133,6 +144,7 @@ private:
   NeighborEntry _table[MAX_NEIGHBORS];
   uint32_t    _lastHello;
   uint32_t    _lastCleanup;
+  OnNeighborLostCb _onLostCb;  // nullptr until registered
 
   // ── Broadcast HELLO ───────────────────────────────────────────────────────
   // ESP-NOW broadcast address: FF:FF:FF:FF:FF:FF
@@ -242,13 +254,17 @@ private:
     }
   }
 
-  // ── Evict stale neighbors ─────────────────────────────────────────────────
+  // ── Evict stale neighbors ────────────────────────────────────────────────────
   void _cleanupStale(uint32_t now) {
     for (uint8_t i = 0; i < MAX_NEIGHBORS; i++) {
       if (!_table[i].active) continue;
       if (now - _table[i].lastSeen > NEIGHBOR_TIMEOUT_MS) {
-        Serial.printf("[Discovery] Evicting stale neighbor: %s\n",
-                      _table[i].nodeId);
+        // Capture nodeId before zeroing the slot
+        char evictedId[FRAME_NODE_ID_LEN];
+        strncpy(evictedId, _table[i].nodeId, FRAME_NODE_ID_LEN - 1);
+        evictedId[FRAME_NODE_ID_LEN - 1] = '\0';
+
+        Serial.printf("[Discovery] Evicting stale neighbor: %s\n", evictedId);
 
         // Remove ESP-NOW unicast peer (keep broadcast peer)
         static const uint8_t BROADCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
@@ -258,6 +274,10 @@ private:
 
         memset(&_table[i], 0, sizeof(NeighborEntry));
         // active is now false — slot is free
+
+        // Notify routing layer immediately so it can poison affected routes
+        // and trigger a DV broadcast before the next tick.
+        if (_onLostCb) _onLostCb(evictedId);
       }
     }
   }

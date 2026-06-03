@@ -22,6 +22,30 @@ typedef enum : uint8_t {
   PKT_TOPOLOGY    = 0x14,   // Neighbor list report
 } PktType;
 
+// ── QoS priority levels ───────────────────────────────────────────────────────────────
+// Numeric values are indices into the four-queue array — do not change them.
+typedef enum : uint8_t {
+  QOS_HIGH   = 0,  // PKT_ALERT — emergency / SOS
+  QOS_MEDIUM = 1,  // PKT_SENSOR, PKT_HEARTBEAT, PKT_TOPOLOGY
+  QOS_LOW    = 2,  // PKT_DATA, PKT_DV_UPDATE
+  QOS_DEBUG  = 3,  // Any future diagnostic packet type
+} QosPriority;
+
+#define QOS_NUM_LEVELS 4
+
+// Map a packet type to its default QoS priority.
+inline QosPriority pktTypeToPriority(uint8_t pktType) {
+  switch ((PktType)pktType) {
+    case PKT_ALERT:     return QOS_HIGH;
+    case PKT_SENSOR:
+    case PKT_HEARTBEAT:
+    case PKT_TOPOLOGY:  return QOS_MEDIUM;
+    case PKT_DATA:
+    case PKT_DV_UPDATE: return QOS_LOW;
+    default:            return QOS_DEBUG;
+  }
+}
+
 // ── Distance Vector update entry (packed into MeshFrame.payload) ──────────────
 // Each DV_UPDATE frame carries an array of DVEntry records.
 // Cost metric: link cost = max(1, 110 + RSSI)  (maps -110..-30 dBm → 0..80)

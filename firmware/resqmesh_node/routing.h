@@ -5,17 +5,14 @@
 // Implements:
 //   • Routing table — per-destination: next-hop MAC, cost, hopCount, seqNum
 //   • Link cost     — derived from RSSI: cost = max(1, 110 + RSSI)
-//   • DV update TX  — periodic broadcast of this node's routing table
+//   • DV update TX  — periodic broadcast via QoS queue
 //   • DV update RX  — Bellman-Ford relaxation on received neighbor tables
 //   • Sequence-number deduplication — stale or looped updates are dropped
-//   • Route invalidation — entries not refreshed within ROUTE_TIMEOUT_MS
-//                          are set to DV_INFINITY and re-advertised (poison)
-//   • Reconvergence — invalidation triggers immediate DV broadcast
+//   • Route invalidation — triggered by neighbor timeout OR route age timeout
+//   • Poison reverse — invalid routes advertised with cost=DV_INFINITY
+//   • Reconvergence  — immediate DV broadcast after any invalidation
 //
-// Does NOT implement: multi-hop forwarding, QoS, TTL decrement.
-// Those are the next firmware layer.
-//
-// Depends on: discovery.h (neighbor table), mesh_types.h, config.h
+// Depends on: discovery.h, qos_queue.h, mesh_types.h, config.h
 // ══════════════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -23,6 +20,7 @@
 #include "config.h"
 #include "mesh_types.h"
 #include "discovery.h"
+#include "qos_queue.h"   // DV broadcasts enqueued at QOS_LOW
 
 // ── Routing table entry ───────────────────────────────────────────────────────
 
@@ -71,7 +69,7 @@ public:
   void tick() {
     uint32_t now = millis();
 
-    // Update direct-neighbor routes from discovery table every DV cycle
+    // Sync direct-neighbor link costs before deciding whether to broadcast
     _refreshNeighborRoutes();
 
     if (now - _lastTimeout >= ROUTE_TIMEOUT_MS / 4) {
@@ -83,6 +81,40 @@ public:
       _lastDvTx = now;
       _dirty    = false;
       broadcastDV();
+    }
+  }
+
+  // ── Neighbor-loss hook ────────────────────────────────────────────────────
+  // Called by Discovery when a neighbor entry is evicted (timeout or manual).
+  // Immediately invalidates every route that uses nodeId as next-hop,
+  // applies poison-reverse on the next DV broadcast, and requests an
+  // immediate DV update so reconvergence propagates without waiting for
+  // DV_UPDATE_INTERVAL_MS.
+  void onNeighborLost(const char* nodeId) {
+    Serial.printf("[Routing] Neighbor lost: %s — invalidating routes\n", nodeId);
+
+    bool anyInvalidated = false;
+
+    for (uint8_t i = 0; i < MAX_ROUTES; i++) {
+      if (!_table[i].active) continue;
+      if (strcmp(_table[i].dest, _myId) == 0) continue;  // never invalidate self
+      if (!_table[i].valid) continue;                      // already invalid
+
+      if (strcmp(_table[i].nextHop, nodeId) == 0) {
+        // Poison: cost = DV_INFINITY, keep entry so we can advertise the poison
+        _table[i].cost     = DV_INFINITY;
+        _table[i].valid    = false;
+        // Increment dest's seqNum so neighbours accept our poison over old routes
+        _table[i].seqNum   = (uint8_t)(_table[i].seqNum + 1);
+        _table[i].lastRefreshed = millis();
+        anyInvalidated = true;
+        Serial.printf("[Routing] Poisoned route: %s (was via %s)\n",
+                      _table[i].dest, nodeId);
+      }
+    }
+
+    if (anyInvalidated) {
+      _dirty = true;   // triggers immediate broadcastDV() in next tick()
     }
   }
 
@@ -174,34 +206,34 @@ public:
   }
 
   // ── Broadcast this node's DV table to all neighbors ──────────────────────
+  // Enqueues a PKT_DV_UPDATE frame at QOS_LOW through the QoS queue.
+  // The drain loop in loop() calls esp_now_send() in priority order.
   void broadcastDV() {
     static const uint8_t BROADCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
-    _mySeq++;  // Increment our own sequence number each advertisement
+    _mySeq++;  // Increment own sequence number each advertisement
 
-    // Update our self-route with fresh seqNum
+    // Refresh our self-route
     RouteEntry* self = _findRoute(_myId);
     if (self) {
       self->seqNum        = _mySeq;
       self->lastRefreshed = millis();
     }
 
-    // Pack DVEntry array into frame payload
+    // Build frame
     MeshFrame frame;
     frameInit(&frame, PKT_DV_UPDATE, _myId, "**", _myMac);
 
-    // payload[0] = entry count; payload[1..] = DVEntry array
     uint8_t count = 0;
     DVEntry* entries = (DVEntry*)(frame.payload + 1);
 
     for (uint8_t i = 0; i < MAX_ROUTES && count < DV_MAX_ENTRIES; i++) {
       if (!_table[i].active) continue;
 
-      // Split horizon: don't advertise routes back toward their source
-      // (simplified — full split-horizon-with-poisoned-reverse in next layer)
       DVEntry& e = entries[count++];
       strncpy(e.dest, _table[i].dest, FRAME_NODE_ID_LEN - 1);
       e.dest[FRAME_NODE_ID_LEN - 1] = '\0';
+      // Advertise DV_INFINITY for poisoned routes so neighbours reconverge
       e.cost     = _table[i].valid ? _table[i].cost : DV_INFINITY;
       e.hopCount = _table[i].hopCount;
       e.seqNum   = (_table[i].valid && strcmp(_table[i].dest, _myId) == 0)
@@ -375,33 +407,36 @@ private:
     return e ? e->seqNum : 0;
   }
 
-  // ── Invalidate stale routes ───────────────────────────────────────────────
+  // ── Invalidate stale routes (age-based, runs on timer) ───────────────────
+  // Also invalidates routes whose next-hop is no longer in the neighbor table
+  // (catches the case where discovery evicted the neighbor between ticks).
   void _checkTimeouts(uint32_t now) {
     bool anyInvalidated = false;
 
     for (uint8_t i = 0; i < MAX_ROUTES; i++) {
       if (!_table[i].active) continue;
-      if (strcmp(_table[i].dest, _myId) == 0) continue;  // never time out self
+      if (strcmp(_table[i].dest, _myId) == 0) continue;
+      if (!_table[i].valid) continue;
 
-      if (_table[i].valid &&
-          now - _table[i].lastRefreshed > ROUTE_TIMEOUT_MS) {
+      // ── Case A: age timeout ───────────────────────────────────────────
+      bool aged = (now - _table[i].lastRefreshed > ROUTE_TIMEOUT_MS);
 
-        // Check if the next-hop neighbor is still alive
-        bool neighborAlive = (_disc->find(_table[i].nextHop) != nullptr);
+      // ── Case B: next-hop no longer a live neighbor ────────────────────
+      bool nhGone = (_disc->find(_table[i].nextHop) == nullptr);
 
-        if (!neighborAlive) {
-          _table[i].cost  = DV_INFINITY;
-          _table[i].valid = false;
-          anyInvalidated  = true;
-          Serial.printf("[Routing] Route expired: %s via %s\n",
-                        _table[i].dest, _table[i].nextHop);
-        }
+      if (aged || nhGone) {
+        _table[i].cost     = DV_INFINITY;
+        _table[i].valid    = false;
+        _table[i].seqNum   = (uint8_t)(_table[i].seqNum + 1);
+        _table[i].lastRefreshed = now;
+        anyInvalidated = true;
+        Serial.printf("[Routing] Route invalidated: %s via %s (%s)\n",
+                      _table[i].dest, _table[i].nextHop,
+                      aged ? "age" : "nh_gone");
       }
     }
 
-    if (anyInvalidated) {
-      _dirty = true;  // trigger immediate DV broadcast (poison reverse)
-    }
+    if (anyInvalidated) _dirty = true;
   }
 };
 

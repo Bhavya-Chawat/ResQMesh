@@ -1,5 +1,5 @@
 /**
- * ResQMesh ESP32 Node Firmware  v4 — Multi-Hop Forwarding
+ * ResQMesh ESP32 Node Firmware  v6 — Route Reconvergence
  * =============================================================
  * Adds routing table, DV updates, RSSI-based cost, route invalidation,
  * and routing-table-aware next-hop selection on top of discovery.
@@ -26,11 +26,13 @@
 #include "mesh_types.h"
 #include "discovery.h"
 #include "routing.h"
+#include "qos_queue.h"
 #include "forwarding.h"
 
 // ── Module singletons ─────────────────────────────────────────────────────────
 Discovery  discovery;
 Routing    routing;
+QosQueue   qosQueue;    // must be before Forwarding (forwarding.h includes qos_queue.h)
 Forwarding forwarding;
 
 // ── Globals ───────────────────────────────────────────────────────────────────
@@ -153,17 +155,17 @@ float readGasLevel() {
 // the gateway publishes directly to MQTT.
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Send an originated MeshFrame toward the gateway.
-// Stamps seqNum before transmitting so forwarding nodes can deduplicate.
-void sendToGateway(MeshFrame& f) {
+// Send an originated MeshFrame toward the gateway via the QoS queue.
+// Stamps seqNum then enqueues; drainOne() handles actual esp_now_send().
+void sendToGateway(MeshFrame& f, QosPriority pri) {
 #if !IS_GATEWAY
-  // Stamp sequence number (origination only — forwarded frames keep their seqNum)
+  // Stamp sequence number (origination only — forwarded frames keep theirs)
   f.seqNum = forwarding.nextSeq();
 
-  // 1. Try routing table for explicit "GW" destination
+  // 1. Routing table lookup for "GW"
   const uint8_t* nhMac = routing.nextHopMac("GW");
 
-  // 2. Fallback: any reachable neighbor (best RSSI)
+  // 2. Fallback: best-RSSI neighbor
   if (!nhMac) nhMac = routing.bestNeighborMac();
 
   if (!nhMac) {
@@ -171,11 +173,16 @@ void sendToGateway(MeshFrame& f) {
     return;
   }
 
-  esp_err_t err = esp_now_send(nhMac, (const uint8_t*)&f, sizeof(f));
+  bool ok = qosQueue.enqueue(nhMac, f, pri);
   const NeighborEntry* nb = discovery.findByMac(nhMac);
-  Serial.printf("[Mesh] TX seq=%u ttl=%u → %s  err=%d\n",
-                f.seqNum, f.ttl, nb ? nb->nodeId : "??", err);
+  Serial.printf("[Mesh] ENQUEUE pri=%d seq=%u ttl=%u → %s  ok=%d\n",
+                pri, f.seqNum, f.ttl, nb ? nb->nodeId : "??", ok);
 #endif
+}
+
+// Convenience: infer priority from frame.pktType.
+void sendToGateway(MeshFrame& f) {
+  sendToGateway(f, pktTypeToPriority(f.pktType));
 }
 
 // ── Sensor ────────────────────────────────────────────────────────────────────
@@ -290,7 +297,12 @@ void publishAlert(const char* alertType, const char* message) {
 #endif
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
+// Forward declarations (needed by neighbor-lost callback registered in setup)
+// ──────────────────────────────────────────────────────────────────────────────
+void publishTopology();
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Setup
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -334,10 +346,24 @@ void setup() {
   // Start discovery
   discovery.begin(NODE_ID, MY_MAC);
 
+  // Register neighbor-lost callback BEFORE first tick().
+  // When discovery evicts a timed-out neighbor:
+  //   1. routing.onNeighborLost() poisons all routes via that neighbor
+  //      and sets _dirty=true for an immediate DV broadcast on next tick.
+  //   2. publishTopology() sends the updated neighbor+route table to the
+  //      gateway so the backend sees the failure without waiting 10 s.
+  discovery.registerOnNeighborLost([](const char* lost) {
+    routing.onNeighborLost(lost);
+    publishTopology();           // immediate topology push on failure
+  });
+
   // Start routing (depends on discovery)
   routing.begin(NODE_ID, MY_MAC, discovery);
 
-  // Start forwarding (depends on discovery + routing)
+  // Start QoS queue (no deps — must be before forwarding)
+  qosQueue.begin();
+
+  // Start forwarding (depends on discovery + routing + qosQueue)
   forwarding.begin(NODE_ID, MY_MAC, discovery, routing);
 }
 
@@ -371,11 +397,24 @@ void loop() {
     publishHeartbeat();
   }
 
-  // ── Topology report (populated from live neighbor table) ──────────────────
+  // ── Topology report ───────────────────────────────────────────────────────
   if (now - lastTopology >= TOPOLOGY_INTERVAL_MS) {
     lastTopology = now;
     publishTopology();
   }
 
-  delay(10);
+  // ── QoS drain loop ────────────────────────────────────────────────────────
+  // Drain the priority queues for up to QOS_DRAIN_BUDGET_MS milliseconds.
+  // HIGH queue is always drained first; lower queues only when HIGH is empty.
+  // Budget prevents starvation of the main loop on high traffic bursts.
+  {
+    uint32_t deadline = millis() + QOS_DRAIN_BUDGET_MS;
+    while (millis() < deadline && qosQueue.drainOne()) {
+      // drainOne() calls esp_now_send() for the highest-priority pending frame.
+      // ESP-NOW is async (on-air time ~1 ms per frame) so we yield briefly
+      // between sends to let the WiFi task process ACKs.
+      delayMicroseconds(500);
+    }
+  }
 }
+
