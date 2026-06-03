@@ -173,6 +173,102 @@ export class MeshGraph {
     );
   }
 
+  resetToPreset(preset, nodeCount) {
+    this.nodes.clear();
+    this.edges = [];
+    this.adjacencyList.clear();
+
+    const cx = 0.5, cy = 0.5, r = 0.35;
+
+    if (preset === 'ring') {
+      for (let i = 0; i < nodeCount; i++) {
+        const angle = (i * 2 * Math.PI) / nodeCount;
+        const id = String.fromCharCode(65 + i);
+        const node = new GraphNode(id, `Node ${id}`, cx + r * Math.sin(angle), cy - r * Math.cos(angle));
+        node.x = node.nx;
+        node.y = node.ny;
+        this.addNode(node);
+      }
+      for (let i = 0; i < nodeCount; i++) {
+        const id1 = String.fromCharCode(65 + i);
+        const id2 = String.fromCharCode(65 + (i + 1) % nodeCount);
+        this.addEdge(id1, id2, Math.floor(10 + Math.random() * 15));
+      }
+    } else if (preset === 'grid') {
+      const cols = Math.ceil(Math.sqrt(nodeCount));
+      const rows = Math.ceil(nodeCount / cols);
+      const pad = 0.15;
+      const dx = (1 - 2 * pad) / Math.max(1, cols - 1);
+      const dy = (1 - 2 * pad) / Math.max(1, rows - 1);
+
+      for (let i = 0; i < nodeCount; i++) {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const id = String.fromCharCode(65 + i);
+        const node = new GraphNode(id, `Node ${id}`, pad + col * dx, pad + row * dy);
+        node.x = node.nx;
+        node.y = node.ny;
+        this.addNode(node);
+      }
+      for (let i = 0; i < nodeCount; i++) {
+        const row = Math.floor(i / cols);
+        const col = i % cols;
+        const id = String.fromCharCode(65 + i);
+        if (col + 1 < cols && i + 1 < nodeCount) {
+          const rightId = String.fromCharCode(65 + i + 1);
+          this.addEdge(id, rightId, Math.floor(10 + Math.random() * 15));
+        }
+        if (row + 1 < rows && i + cols < nodeCount) {
+          const bottomId = String.fromCharCode(65 + i + cols);
+          this.addEdge(id, bottomId, Math.floor(10 + Math.random() * 15));
+        }
+      }
+    } else if (preset === 'star') {
+      const centerId = 'A';
+      this.addNode(new GraphNode(centerId, `Node ${centerId}`, 0.5, 0.5));
+      for (let i = 1; i < nodeCount; i++) {
+        const angle = ((i - 1) * 2 * Math.PI) / (nodeCount - 1);
+        const id = String.fromCharCode(65 + i);
+        const node = new GraphNode(id, `Node ${id}`, cx + r * Math.sin(angle), cy - r * Math.cos(angle));
+        node.x = node.nx;
+        node.y = node.ny;
+        this.addNode(node);
+        this.addEdge(centerId, id, Math.floor(10 + Math.random() * 15));
+      }
+    } else {
+      // random mesh
+      for (let i = 0; i < nodeCount; i++) {
+        const id = String.fromCharCode(65 + i);
+        const nx = 0.15 + Math.random() * 0.7;
+        const ny = 0.15 + Math.random() * 0.7;
+        const node = new GraphNode(id, `Node ${id}`, nx, ny);
+        node.x = node.nx;
+        node.y = node.ny;
+        this.addNode(node);
+      }
+      const ids = Array.from(this.nodes.keys());
+      for (let i = 0; i < nodeCount; i++) {
+        const id1 = ids[i];
+        const n1 = this.nodes.get(id1);
+        let nearestId = null;
+        let minDist = Infinity;
+        for (let j = 0; j < nodeCount; j++) {
+          if (i === j) continue;
+          const id2 = ids[j];
+          const n2 = this.nodes.get(id2);
+          const dist = Math.pow(n1.nx - n2.nx, 2) + Math.pow(n1.ny - n2.ny, 2);
+          if (dist < minDist) {
+            minDist = dist;
+            nearestId = id2;
+          }
+        }
+        if (nearestId && !this.getEdge(id1, nearestId)) {
+          this.addEdge(id1, nearestId, Math.floor(10 + Math.random() * 15));
+        }
+      }
+    }
+  }
+
   updateSensors() {
     for (const [, node] of this.nodes) {
       if (node.data.status !== 'failed') {
@@ -180,6 +276,7 @@ export class MeshGraph {
       }
     }
   }
+
 
   // ========== ALGORITHMS ==========
 

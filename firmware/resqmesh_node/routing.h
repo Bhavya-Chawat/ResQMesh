@@ -19,7 +19,6 @@
 #include <esp_now.h>
 #include "config.h"
 #include "mesh_types.h"
-#include "discovery.h"
 #include "qos_queue.h"   // DV broadcasts enqueued at QOS_LOW
 
 // ── Routing table entry ───────────────────────────────────────────────────────
@@ -388,16 +387,38 @@ private:
   // ── Sync direct-neighbor costs from discovery table ───────────────────────
   // Called before each DV broadcast so link-cost changes propagate immediately.
   void _refreshNeighborRoutes() {
+    // Invalidate direct routes to neighbors that are no longer in Discovery table
+    for (uint8_t i = 0; i < MAX_ROUTES; i++) {
+      if (!_table[i].active) continue;
+      if (strcmp(_table[i].dest, _myId) == 0) continue;
+
+      if (strcmp(_table[i].dest, _table[i].nextHop) == 0) {
+        const NeighborEntry* nb = _disc->find(_table[i].dest);
+        if (!nb) {
+          if (_table[i].valid) {
+            _table[i].cost  = DV_INFINITY;
+            _table[i].valid = false;
+            _table[i].lastRefreshed = millis();
+            _dirty = true;
+            Serial.printf("[Routing] Direct neighbor %s lost — invalidating route\n", _table[i].dest);
+          }
+        }
+      }
+    }
+
     NeighborEntry neighbors[MAX_NEIGHBORS];
     uint8_t cnt = _disc->getNeighbors(neighbors, MAX_NEIGHBORS);
 
     for (uint8_t i = 0; i < cnt; i++) {
       uint8_t cost = _rssiToCost(neighbors[i].rssi);
-      _upsertRoute(neighbors[i].nodeId,
-                   neighbors[i].nodeId,
-                   neighbors[i].mac,
-                   cost, 1,
-                   _findSeqFor(neighbors[i].nodeId));
+      bool updated = _upsertRoute(neighbors[i].nodeId,
+                                  neighbors[i].nodeId,
+                                  neighbors[i].mac,
+                                  cost, 1,
+                                  _findSeqFor(neighbors[i].nodeId));
+      if (updated) {
+        _dirty = true;
+      }
     }
   }
 
@@ -420,7 +441,6 @@ private:
 
       // ── Case A: age timeout ───────────────────────────────────────────
       bool aged = (now - _table[i].lastRefreshed > ROUTE_TIMEOUT_MS);
-
       // ── Case B: next-hop no longer a live neighbor ────────────────────
       bool nhGone = (_disc->find(_table[i].nextHop) == nullptr);
 

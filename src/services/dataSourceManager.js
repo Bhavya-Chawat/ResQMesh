@@ -46,6 +46,8 @@ class DataSourceManager {
     this._notify = null;          // () => void — triggers React re-render
     this._wsUnsubs = [];          // cleanup functions for WS listeners
     this._connectionStatus = 'disconnected';
+    this.expectedNodes = 5;       // default expected hardware nodes count
+    this._simGraphBackup = null;  // backup of simulation graph when switching to hardware mode
   }
 
   // ── Public getters ──────────────────────────────────────────────────
@@ -107,6 +109,22 @@ class DataSourceManager {
   // ── Simulation mode ──────────────────────────────────────────────────
 
   _startSimulationMode() {
+    // Restore simulation graph from backup if it exists, otherwise ensure we have nodes
+    if (this._graph) {
+      if (this._simGraphBackup) {
+        this._graph.nodes = new Map(this._simGraphBackup.nodes);
+        this._graph.edges = [...this._simGraphBackup.edges];
+        this._graph.adjacencyList = new Map(this._simGraphBackup.adjacencyList);
+        if (this._sim && this._simGraphBackup.stats) {
+          this._sim.stats = { ...this._simGraphBackup.stats };
+        }
+        this._simGraphBackup = null;
+      } else if (this._graph.nodes.size === 0) {
+        // Fallback: reset to default ring with 5 nodes if empty
+        this._graph.resetToPreset('ring', 5);
+      }
+    }
+
     if (!this._sim?.isRunning) {
       this._sim?.start();
     }
@@ -120,9 +138,37 @@ class DataSourceManager {
   // ── Hardware mode ────────────────────────────────────────────────────
 
   _startHardwareMode() {
+    // Backup simulation graph if not already backed up
+    if (this._graph && this._graph.nodes.size > 0 && !this._simGraphBackup) {
+      this._simGraphBackup = {
+        nodes: new Map(this._graph.nodes),
+        edges: [...this._graph.edges],
+        adjacencyList: new Map(this._graph.adjacencyList),
+        stats: this._sim ? { ...this._sim.stats } : null
+      };
+    }
+
     // Stop simulation so it doesn't clobber hardware data
     if (this._sim?.isRunning) {
       this._sim.stop();
+    }
+
+    // Clear simulation stats when entering hardware mode
+    if (this._sim) {
+      this._sim.stats = {
+        totalPacketsSent: 0,
+        totalPacketsDelivered: 0,
+        totalPacketsDropped: 0,
+        avgLatency: 0,
+        throughput: 0
+      };
+    }
+
+    // Clear current graph nodes and edges so hardware mode starts with 0 nodes until detected in real-time
+    if (this._graph) {
+      this._graph.nodes.clear();
+      this._graph.edges = [];
+      this._graph.adjacencyList.clear();
     }
 
     this._connectionStatus = 'connecting';

@@ -12,12 +12,12 @@
 // ── Role ─────────────────────────────────────────────────────────────────────
 // true  = Gateway: runs WiFi + MQTT + ESP-NOW receive
 // false = Mesh node: runs ESP-NOW only (no WiFi credentials needed)
-#define IS_GATEWAY  false
+#define IS_GATEWAY  true
 
 // ── WiFi / MQTT (gateway only — ignored on mesh nodes) ───────────────────────
-#define WIFI_SSID      "YOUR_SSID"
-#define WIFI_PASSWORD  "YOUR_PASSWORD"
-#define MQTT_BROKER    "192.168.1.100"
+#define WIFI_SSID      "Madhur"
+#define WIFI_PASSWORD  "qwertyuiop"
+#define MQTT_BROKER    "172.20.10.9"
 #define MQTT_PORT      1883
 #define MQTT_USER      ""
 #define MQTT_PASS      ""

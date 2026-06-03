@@ -20,6 +20,7 @@
 #include "config.h"
 #include "mesh_types.h"
 
+
 // ── Neighbor table entry ──────────────────────────────────────────────────────
 
 struct NeighborEntry {
@@ -40,6 +41,16 @@ typedef void (*OnNeighborLostCb)(const char* nodeId);
 
 class Discovery {
 public:
+  // Record heartbeat from direct neighbor MAC to keep it alive
+  void recordHeartbeat(const uint8_t mac[6]) {
+    for (uint8_t i = 0; i < MAX_NEIGHBORS; i++) {
+      if (_table[i].active && memcmp(_table[i].mac, mac, 6) == 0) {
+        _table[i].lastSeen = millis();
+        return;
+      }
+    }
+  }
+
   // ── Init ─────────────────────────────────────────────────────────────────
   // Call once after esp_now_init() and esp_now_register_recv_cb().
   // myId  : this node's NODE_ID string
@@ -163,7 +174,6 @@ private:
     MeshFrame f;
     frameInit(&f, PKT_HELLO, _myId, "**", _myMac);
     f.rssi = 0;  // sender-side RSSI not applicable for broadcasts
-
     esp_err_t err = esp_now_send(BROADCAST, (const uint8_t*)&f, sizeof(f));
     Serial.printf("[Discovery] HELLO broadcast — neighbors: %d  err: %d\n",
                   count(), err);
