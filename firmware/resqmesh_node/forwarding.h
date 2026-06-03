@@ -17,12 +17,6 @@
 // Depends on: routing.h, discovery.h, mesh_types.h, qos_queue.h, config.h
 // ══════════════════════════════════════════════════════════════════════════════
 
-#include <Arduino.h>
-#include <esp_now.h>
-#include "config.h"
-#include "mesh_types.h"
-#include "discovery.h"
-#include "routing.h"
 #include "qos_queue.h"
 
 // ── Deduplication cache ───────────────────────────────────────────────────────

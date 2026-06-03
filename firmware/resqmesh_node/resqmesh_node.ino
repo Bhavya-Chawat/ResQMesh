@@ -85,13 +85,22 @@ void mqttPublishJson(const char* msgType, JsonDocument& doc) {
 // Routes HELLO / HELLO_ACK to the discovery module; DATA/SENSOR/etc. to MQTT
 // (on gateway) or future multi-hop forwarding.
 
+
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+void onEspNowRecv(const esp_now_recv_info* recvInfo, const uint8_t* data, int len) {
+  const uint8_t* mac = recvInfo->src_addr;
+#else
 void onEspNowRecv(const uint8_t* mac, const uint8_t* data, int len) {
+#endif
+  discovery.recordHeartbeat(mac);
+
+  struct OldFrame { char nodeId[8]; char msgType[12]; char jsonPayload[256]; };
+
   if (len != sizeof(MeshFrame)) {
     // Legacy frame from old firmware (single-file sketch) — handle gracefully
-    if (len == sizeof(struct { char nodeId[8]; char msgType[12]; char jsonPayload[256]; })) {
+    if (len == sizeof(OldFrame)) {
       // Old EspNowFrame — only gateway handles this path
 #if IS_GATEWAY
-      struct OldFrame { char nodeId[8]; char msgType[12]; char jsonPayload[256]; };
       const OldFrame* old = (const OldFrame*)data;
       String topic = String("resqmesh/") + old->nodeId + "/" + old->msgType;
       mqttClient.publish(topic.c_str(), old->jsonPayload);
@@ -328,12 +337,17 @@ void setup() {
   // ── Mesh node: STA mode required for ESP-NOW ──
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();    // don't associate with any AP
-  Serial.printf("[Mesh] Node %s  MAC: %s\n",
-                NODE_ID, WiFi.macAddress().c_str());
+  
+  // Explicitly set the Wi-Fi channel to match the ESP-NOW mesh channel
+  #include <esp_wifi.h>
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  Serial.printf("[Mesh] Node %s  MAC: %s  Channel: %d\n",
+                NODE_ID, WiFi.macAddress().c_str(), ESPNOW_CHANNEL);
 #endif
 
   // Read our own MAC
-  esp_read_mac(MY_MAC, ESP_MAC_WIFI_STA);
+  WiFi.macAddress(MY_MAC);
 
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
@@ -342,6 +356,7 @@ void setup() {
   }
   esp_now_register_recv_cb(onEspNowRecv);
   Serial.println("[ESP-NOW] Initialised");
+
 
   // Start discovery
   discovery.begin(NODE_ID, MY_MAC);
@@ -372,6 +387,7 @@ void setup() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 void loop() {
+
   uint32_t now = millis();
 
 #if IS_GATEWAY

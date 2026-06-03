@@ -11,7 +11,7 @@ function nodePos(node, w, h, pad = 55) {
 }
 
 export default function CommandCenter() {
-  const { graph, sim } = useApp();
+  const { graph, sim, dataSourceManager } = useApp();
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [selectedNode, setSelectedNode] = useState(null);
@@ -19,6 +19,17 @@ export default function CommandCenter() {
   const dragRef = useRef(null);
   const animRef = useRef(null);
   const timeRef = useRef(0);
+
+  const [preset, setPreset] = useState('ring');
+  const [nodeCount, setNodeCount] = useState(5);
+  const [expectedHwNodes, setExpectedHwNodes] = useState(dataSourceManager?.expectedNodes || 5);
+
+  const handleResetMesh = () => {
+    graph.resetToPreset(preset, nodeCount);
+    setSelectedNode(null);
+    sim.eventLog.add('info', `Reset topology to ${preset.toUpperCase()} with ${nodeCount} nodes`);
+    setTick(t => t + 1);
+  };
 
   // Auto-start simulation
   useEffect(() => {
@@ -291,10 +302,64 @@ export default function CommandCenter() {
       <div className="page-header">
         <h1 className="page-title glow-text-orange">Command Center</h1>
         <div className="page-controls">
+          {/* Mode Toggle Button */}
+          <button 
+            className="btn btn-sm" 
+            style={{
+              borderColor: dataSourceManager?.isHardware ? 'var(--neon-green)' : 'var(--neon-cyan)',
+              color: dataSourceManager?.isHardware ? 'var(--neon-green)' : 'var(--neon-cyan)',
+              background: dataSourceManager?.isHardware ? 'rgba(57,255,20,0.08)' : 'rgba(0,229,255,0.08)',
+              marginRight: '8px'
+            }}
+            onClick={() => {
+              dataSourceManager.toggle();
+              setSelectedNode(null);
+              setTick(t => t + 1);
+            }}
+          >
+            {dataSourceManager?.isHardware ? '🔌 Mode: Hardware' : '💻 Mode: Simulation'}
+          </button>
+
+          {!dataSourceManager?.isHardware ? (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select
+                value={preset}
+                onChange={e => setPreset(e.target.value)}
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '0.72rem', background: 'rgba(10,6,24,0.6)',
+                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '4px 6px',
+                }}
+              >
+                <option value="ring">Ring Network</option>
+                <option value="grid">Grid Mesh</option>
+                <option value="star">Star Hub</option>
+                <option value="random">Random Mesh</option>
+              </select>
+              <select
+                value={nodeCount}
+                onChange={e => setNodeCount(Number(e.target.value))}
+                style={{
+                  fontFamily: 'var(--font-mono)', fontSize: '0.72rem', background: 'rgba(10,6,24,0.6)',
+                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '4px 6px',
+                }}
+              >
+                {[3, 5, 8, 10, 12, 15].map(n => (
+                  <option key={n} value={n}>{n} Nodes</option>
+                ))}
+              </select>
+              <button className="btn btn-sm btn-yellow" onClick={handleResetMesh}>Rebuild</button>
+            </div>
+          ) : (
+            <div style={{ marginRight: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              Auto-Detected: <strong style={{ color: 'var(--neon-green)' }}>{health.activeNodes}</strong>
+            </div>
+          )}
           <button className="btn btn-sm" onClick={() => sim.isRunning ? sim.stop() : sim.start()}>
             {sim.isRunning ? '⏸ Pause' : '▶ Start'}
           </button>
-          <button className="btn btn-sm btn-yellow" onClick={addNode}>+ Node</button>
+          {!dataSourceManager?.isHardware && (
+            <button className="btn btn-sm btn-cyan" onClick={addNode}>+ Node</button>
+          )}
           {selectedNode && <>
             <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>Recover Node</button>
           </>}
@@ -304,7 +369,11 @@ export default function CommandCenter() {
       {/* Stat Strip */}
       <div className="stat-strip">
         {[
-          { label: 'Active Nodes', value: `${health.activeNodes}/${health.totalNodes}`, cls: '' },
+          { 
+            label: dataSourceManager?.isHardware ? 'Live ESP Nodes' : 'Active Nodes', 
+            value: `${health.activeNodes}/${health.totalNodes}`, 
+            cls: '' 
+          },
           { label: 'Active Edges', value: health.activeEdges, cls: 'yellow' },
           { label: 'Packets Sent', value: health.packetsSent, cls: 'cyan' },
           { label: 'Delivery Rate', value: `${health.deliveryRate}%`, cls: 'green' },

@@ -9,6 +9,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#define FRAME_NODE_ID_LEN   8    // nodeId string including null terminator
+#define FRAME_PAYLOAD_LEN   196  // JSON payload (reduced by 4 to fit ttl+seqNum)
+#define FRAME_DEFAULT_TTL     7  // Max hops before a data frame is dropped
+
 // ── Packet type codes ─────────────────────────────────────────────────────────
 // Kept as uint8_t (1 byte) to minimise frame size.
 typedef enum : uint8_t {
@@ -52,8 +56,8 @@ inline QosPriority pktTypeToPriority(uint8_t pktType) {
 //              route cost = sum of link costs along the path
 
 #define DV_INFINITY      255   // Unreachable sentinel (fits in uint8_t)
-#define DV_MAX_ENTRIES    18   // Max entries per DV_UPDATE frame
-                               // (18 × 11 bytes = 198 bytes ≤ FRAME_PAYLOAD_LEN)
+#define DV_MAX_ENTRIES    17   // Max entries per DV_UPDATE frame
+                               // (17 × 11 bytes = 187 bytes ≤ FRAME_PAYLOAD_LEN)
 
 typedef struct __attribute__((packed)) {
   char    dest[FRAME_NODE_ID_LEN];  // Destination node ID
@@ -68,10 +72,6 @@ static_assert(sizeof(DVEntry) * DV_MAX_ENTRIES <= FRAME_PAYLOAD_LEN,
 // ── Wire frame ────────────────────────────────────────────────────────────────
 // Every ESP-NOW transmission is exactly one MeshFrame.
 // Maximum ESP-NOW payload is 250 bytes — this struct must stay ≤ 250 bytes.
-
-#define FRAME_NODE_ID_LEN   8    // nodeId string including null terminator
-#define FRAME_PAYLOAD_LEN   196  // JSON payload (reduced by 4 to fit ttl+seqNum)
-#define FRAME_DEFAULT_TTL     7  // Max hops before a data frame is dropped
 
 typedef struct __attribute__((packed)) {
   uint8_t  pktType;                    // PktType enum
