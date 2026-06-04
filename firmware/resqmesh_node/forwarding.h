@@ -71,6 +71,18 @@ public:
   // On the gateway node this publishes to MQTT.
   // On mesh nodes this re-sends toward the next hop.
   bool forward(const uint8_t* recvMac, const MeshFrame* frame) {
+    extern bool isIsolatedManually;
+    if (isIsolatedManually) {
+      bool forUs = (strcmp(frame->dstId, _myId) == 0);
+      if (forUs && frame->pktType == PKT_DATA) {
+        if (!_isSeen(frame->srcId, frame->seqNum)) {
+          _markSeen(frame->srcId, frame->seqNum);
+          _handleLocalControl(frame);
+        }
+      }
+      return false;
+    }
+
 
     // ── Step 1: Deduplication ────────────────────────────────────────────
     if (_isSeen(frame->srcId, frame->seqNum)) {
@@ -103,6 +115,9 @@ public:
       // (Application callbacks can be registered here in a future layer.)
       Serial.printf("[Fwd] DELIVER local: src=%s seq=%u\n",
                     frame->srcId, frame->seqNum);
+      if (frame->pktType == PKT_DATA) {
+        _handleLocalControl(frame);
+      }
       return true;
     }
 #endif
@@ -202,6 +217,28 @@ private:
                   (uint8_t)(FRAME_DEFAULT_TTL - frame->ttl));
   }
 #endif
+
+  void _handleLocalControl(const MeshFrame* frame) {
+    StaticJsonDocument<128> doc;
+    DeserializationError error = deserializeJson(doc, frame->payload);
+    if (!error) {
+      const char* status = doc["status"];
+      if (status) {
+        extern bool isIsolatedManually;
+        if (strcmp(status, "failed") == 0) {
+          isIsolatedManually = true;
+          digitalWrite(LED_RED_PIN, HIGH);
+          Serial.println("[Control] Manually isolated — Red LED glows");
+        } else if (strcmp(status, "active") == 0) {
+          isIsolatedManually = false;
+          digitalWrite(LED_RED_PIN, LOW);
+          Serial.println("[Control] Manually recovered — Red LED off");
+        }
+      }
+    } else {
+      Serial.printf("[Control] Failed to parse control payload: %s\n", error.c_str());
+    }
+  }
 };
 
 // ── Module singleton (extern — defined in the .ino) ──────────────────────────

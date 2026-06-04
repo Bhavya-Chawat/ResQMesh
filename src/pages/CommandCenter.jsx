@@ -66,6 +66,40 @@ export default function CommandCenter() {
     setTick(t => t + 1);
   };
 
+  const handleFailNode = () => {
+    if (!selectedNode) return;
+    if (dataSourceManager?.isHardware) {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      fetch(`${backendUrl}/api/nodes/${selectedNode}/fail`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'ok') {
+            sim.eventLog.add('critical', `Manual fail command sent for Sub-Server ${selectedNode}`);
+          }
+        })
+        .catch(err => console.error('Failed to fail node:', err));
+    } else {
+      sim.failNode(selectedNode);
+    }
+  };
+
+  const handleRecoverNode = () => {
+    if (!selectedNode) return;
+    if (dataSourceManager?.isHardware) {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+      fetch(`${backendUrl}/api/nodes/${selectedNode}/recover`, { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.status === 'ok') {
+            sim.eventLog.add('success', `Manual recover command sent for Sub-Server ${selectedNode}`);
+          }
+        })
+        .catch(err => console.error('Failed to recover node:', err));
+    } else {
+      sim.recoverNode(selectedNode);
+    }
+  };
+
   // Auto-start simulation (only in simulation mode)
   useEffect(() => {
     if (dataSourceManager && !dataSourceManager.isHardware && !sim.isRunning) {
@@ -571,9 +605,15 @@ export default function CommandCenter() {
                 <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
                   Delete Node
                 </button>
-                <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => sim.failNode(selectedNode)}>
-                  Fail Node
-                </button>
+                {sel.data.status === 'failed' ? (
+                  <button className="btn btn-sm btn-green" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={handleRecoverNode}>
+                    Recover Node
+                  </button>
+                ) : (
+                  <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={handleFailNode}>
+                    Fail Node
+                  </button>
+                )}
               </div>
               
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.95rem', color: 'var(--nash-chartreuse)', marginBottom: 8, fontWeight: 'bold' }}>

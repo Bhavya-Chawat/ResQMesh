@@ -20,14 +20,35 @@ WebSocket events emitted to frontend:
   stats_update      – aggregate network health metrics
 """
 
-import os
-import json
-import time
-import threading
-import logging
+import _thread
+native_get_ident = _thread.get_ident
 
 import eventlet
 eventlet.monkey_patch()
+
+# Patch get_ident to handle interpreter shutdown/finalization gracefully
+import threading
+original_get_ident = threading.get_ident
+
+def safe_get_ident(*args, **kwargs):
+    try:
+        return original_get_ident(*args, **kwargs)
+    except RuntimeError as e:
+        if "greenlet is being finalized" in str(e):
+            return native_get_ident()
+        raise
+
+threading.get_ident = safe_get_ident
+try:
+    import eventlet.green.thread as eventlet_thread
+    eventlet_thread.get_ident = safe_get_ident
+except Exception:
+    pass
+
+import os
+import json
+import time
+import logging
 
 from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -92,6 +113,7 @@ class NodeState:
         self.nx     = 0.5 + offset_x
         self.ny     = 0.5 + offset_y
         self.last_heartbeat = time.time()
+        self.is_manually_failed = False
         self.data   = {
             "temperature":   25.0,
             "humidity":      50.0,
@@ -223,6 +245,8 @@ class TopologyManager:
         node = self.get_or_create_node(node_id)
         with self._lock:
             node.last_heartbeat = time.time()
+            if node.is_manually_failed:
+                return "ok"
             if node.data["status"] == "failed":
                 # Only recover if the failure wasn't due to high sensor readings
                 t   = node.data["temperature"]
@@ -239,6 +263,7 @@ class TopologyManager:
         with self._lock:
             if node_id in self.nodes:
                 self.nodes[node_id].data["status"] = "failed"
+                self.nodes[node_id].is_manually_failed = True
 
     def set_manual_weight(self, source: str, target: str, weight: float):
         key = tuple(sorted([source, target]))
@@ -588,6 +613,11 @@ def api_health():
 @app.route("/api/nodes/<node_id>/fail", methods=["POST"])
 def api_fail_node(node_id):
     topology.mark_failed(node_id)
+    try:
+        mqtt_client.publish(f"resqmesh/{node_id}/control", json.dumps({"status": "failed"}), qos=1)
+        log.info("Published manual failure control to MQTT for node %s", node_id)
+    except Exception as e:
+        log.error("Failed to publish failure command to MQTT: %s", e)
     socketio.emit("node_failure", {
         "nodeId":    node_id,
         "timestamp": time.time(),
@@ -600,9 +630,15 @@ def api_fail_node(node_id):
 @app.route("/api/nodes/<node_id>/recover", methods=["POST"])
 def api_recover_node(node_id):
     node = topology.get_or_create_node(node_id)
+    node.is_manually_failed = False
     node.data["status"]        = "active"
     node.data["battery"]       = 90.0
     node.last_heartbeat        = time.time()
+    try:
+        mqtt_client.publish(f"resqmesh/{node_id}/control", json.dumps({"status": "active"}), qos=1)
+        log.info("Published manual recovery control to MQTT for node %s", node_id)
+    except Exception as e:
+        log.error("Failed to publish recovery command to MQTT: %s", e)
     socketio.emit("topology_update", topology.snapshot())
     socketio.emit("stats_update",    topology.get_health())
     return jsonify({"status": "ok", "nodeId": node_id})
