@@ -72,7 +72,7 @@ void mqttReconnect() {
 }
 
 void mqttPublishJson(const char* msgType, JsonDocument& doc) {
-  char buf[300];
+  char buf[512];
   serializeJson(doc, buf);
   mqttClient.publish(topicFor(msgType).c_str(), buf);
 }
@@ -201,6 +201,20 @@ void publishSensor() {
   float gas  = readGasLevel();
   float bat  = readBatteryPercent();
 
+  // Control green and red LEDs based on sensor thresholds (Temp > 45°C or Gas > 160 ppm)
+  bool unusual = false;
+  if (!isnan(temp) && (temp > 45.0f || gas > 160.0f)) {
+    unusual = true;
+  }
+
+  if (unusual) {
+    digitalWrite(LED_GREEN_PIN, LOW);
+    digitalWrite(LED_RED_PIN, HIGH);
+  } else {
+    digitalWrite(LED_GREEN_PIN, HIGH);
+    digitalWrite(LED_RED_PIN, LOW);
+  }
+
   // Build JSON payload
   StaticJsonDocument<256> doc;
   doc["nodeId"]      = NODE_ID;
@@ -256,14 +270,17 @@ void publishTopology() {
     nb["id"]      = neighbors[i].nodeId;
     nb["rssi"]    = neighbors[i].rssi;
     nb["latency"] = max(1, 110 + (int)neighbors[i].rssi); // = link cost
+#if IS_GATEWAY
     char macStr[18];
     snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
              neighbors[i].mac[0], neighbors[i].mac[1], neighbors[i].mac[2],
              neighbors[i].mac[3], neighbors[i].mac[4], neighbors[i].mac[5]);
     nb["mac"] = macStr;
+#endif
   }
 
-  // ── Routing table (full DV table for backend graph view) ─────────────────
+  // ── Routing table (full DV table for backend graph view - Gateway only) ──
+#if IS_GATEWAY
   JsonArray routes = doc.createNestedArray("routes");
   RouteEntry routesBuf[MAX_ROUTES];
   uint8_t rCnt = routing.getRoutes(routesBuf, MAX_ROUTES);
@@ -276,6 +293,7 @@ void publishTopology() {
     ro["hopCount"] = r.hopCount;
     ro["valid"]    = r.valid;
   }
+#endif
 
 #if IS_GATEWAY
   mqttPublishJson("topology", doc);
@@ -319,6 +337,13 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   dht.begin();
+
+  // Initialize LED pins
+  pinMode(LED_GREEN_PIN, OUTPUT);
+  pinMode(LED_RED_PIN, OUTPUT);
+  // Default to normal operation state (Green ON, Red OFF)
+  digitalWrite(LED_GREEN_PIN, HIGH);
+  digitalWrite(LED_RED_PIN, LOW);
 
 #if IS_GATEWAY
   // ── Gateway: WiFi station + AP (AP keeps a fixed channel for ESP-NOW) ──

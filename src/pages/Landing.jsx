@@ -1,174 +1,124 @@
-import { useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import dataSourceManager from '../services/dataSourceManager';
 
 export default function Landing() {
-  const canvasRef = useRef(null);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    let animId;
-    let nodes = [];
-    let packets = [];
-    const COLORS = { orange: '#FF653F', yellow: '#FFC85C', cyan: '#00E5FF', purple: '#452E5A' };
-
-    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    resize();
-    window.addEventListener('resize', resize);
-
-    // Create floating mesh nodes
-    for (let i = 0; i < 30; i++) {
-      nodes.push({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
-        vx: (Math.random() - 0.5) * 0.5,
-        vy: (Math.random() - 0.5) * 0.5,
-        r: 3 + Math.random() * 4,
-        pulse: Math.random() * Math.PI * 2,
-        color: [COLORS.orange, COLORS.yellow, COLORS.cyan][Math.floor(Math.random() * 3)],
-      });
-    }
-
-    function spawnPacket() {
-      if (nodes.length < 2) return;
-      const a = Math.floor(Math.random() * nodes.length);
-      let b = a;
-      while (b === a) b = Math.floor(Math.random() * nodes.length);
-      packets.push({
-        sx: nodes[a].x, sy: nodes[a].y,
-        ex: nodes[b].x, ey: nodes[b].y,
-        t: 0,
-        color: [COLORS.orange, COLORS.cyan, COLORS.yellow][Math.floor(Math.random() * 3)],
-      });
-    }
-
-    let time = 0;
-    function draw() {
-      time += 0.016;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Draw edges between nearby nodes
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[i].x - nodes[j].x;
-          const dy = nodes[i].y - nodes[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 200) {
-            const alpha = (1 - dist / 200) * 0.15;
-            ctx.strokeStyle = `rgba(255,101,63,${alpha})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(nodes[i].x, nodes[i].y);
-            ctx.lineTo(nodes[j].x, nodes[j].y);
-            ctx.stroke();
-          }
-        }
-      }
-
-      // Draw and update nodes
-      for (const n of nodes) {
-        n.x += n.vx;
-        n.y += n.vy;
-        if (n.x < 0 || n.x > canvas.width) n.vx *= -1;
-        if (n.y < 0 || n.y > canvas.height) n.vy *= -1;
-        n.pulse += 0.02;
-        const scale = 1 + Math.sin(n.pulse) * 0.3;
-
-        // Glow
-        const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r * 4 * scale);
-        grad.addColorStop(0, n.color + '40');
-        grad.addColorStop(1, 'transparent');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, n.r * 4 * scale, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Core
-        ctx.fillStyle = n.color;
-        ctx.beginPath();
-        ctx.arc(n.x, n.y, n.r * scale, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw packets
-      if (Math.random() < 0.03) spawnPacket();
-      for (let i = packets.length - 1; i >= 0; i--) {
-        const p = packets[i];
-        p.t += 0.012;
-        if (p.t > 1) { packets.splice(i, 1); continue; }
-        const x = p.sx + (p.ex - p.sx) * p.t;
-        const y = p.sy + (p.ey - p.sy) * p.t;
-        ctx.fillStyle = p.color;
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 8;
-        ctx.beginPath();
-        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-
-      // Radar sweep
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-      const rr = Math.min(canvas.width, canvas.height) * 0.35;
-      const angle = time * 0.5;
-      const sweepGrad = ctx.createConicalGradient ? null : null;
-      ctx.strokeStyle = `rgba(255,101,63,0.06)`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(cx, cy, rr, 0, Math.PI * 2);
-      ctx.stroke();
-      // Sweep line
-      ctx.strokeStyle = `rgba(255,101,63,0.15)`;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(angle) * rr, cy + Math.sin(angle) * rr);
-      ctx.stroke();
-
-      animId = requestAnimationFrame(draw);
-    }
-    draw();
-
-    return () => {
-      cancelAnimationFrame(animId);
-      window.removeEventListener('resize', resize);
-    };
-  }, []);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [, setTick] = useState(0);
 
   return (
     <div className="landing-page">
-      <canvas ref={canvasRef} className="landing-canvas" />
-      <div className="landing-grid-overlay" />
       <div className="landing-scanline" />
-      <div className="landing-content animate-fade-in">
-        <div className="landing-subtitle">Intelligent Self-Healing Disaster Communication</div>
-        <h1 className="landing-title">
-          <span style={{ color: 'var(--neon-orange)' }}>ResQ</span>Mesh
+      
+      {/* Top Floating Header Cards */}
+      <header className="app-header-cards" style={{ position: 'absolute', top: '20px', left: '24px', right: '24px' }}>
+        {/* Logo Text (Top Left) */}
+        <div className="brand-label-text" onClick={() => { navigate('/'); setIsMobileMenuOpen(false); }}>
+          ResQMesh
+        </div>
+
+        {/* Central Navigation Dock (Tighter cohesive cluster) */}
+        <div className="desktop-nav-cards">
+          <span className="nav-card-item" onClick={() => navigate('/command')}>Command</span>
+          <span className="nav-card-item" onClick={() => navigate('/algorithms')}>Algo Lab</span>
+          <span className="nav-card-item" onClick={() => navigate('/network')}>Network</span>
+          <span className="nav-card-item" onClick={() => navigate('/rescue')}>Rescue Map</span>
+          <span className="nav-card-item" onClick={() => navigate('/reports')}>Reports</span>
+        </div>
+
+        {/* Right Group (Toggle Card & Mobile Menu Toggle) */}
+        <div className="header-cards-right">
+          {/* Toggle Card */}
+          <div className="header-card mode-toggle-card glass-panel">
+            <div 
+              className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
+              onClick={() => {
+                dataSourceManager.toggle();
+                setTick(t => t + 1);
+              }}
+              title="Toggle Simulation / Hardware mode"
+            >
+              <div className="segmented-slider"></div>
+              <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+                Simulation
+              </div>
+              <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+                Hardware
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile Menu Toggle Card */}
+          <button 
+            className="header-card mobile-menu-toggle-card glass-panel"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+          >
+            <span style={{ fontSize: '0.72rem', fontWeight: 'bold', color: 'var(--text-secondary)' }}>
+              {isMobileMenuOpen ? 'CLOSE' : 'MENU'}
+            </span>
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile Dropdown Navigation Panel */}
+      {isMobileMenuOpen && (
+        <div className="mobile-nav-cards-dropdown glass-panel animate-slide-in" style={{ position: 'absolute', top: '72px', right: '24px' }}>
+          <span className="mobile-nav-card-link" onClick={() => { navigate('/command'); setIsMobileMenuOpen(false); }}>Command</span>
+          <span className="mobile-nav-card-link" onClick={() => { navigate('/algorithms'); setIsMobileMenuOpen(false); }}>Algo Lab</span>
+          <span className="mobile-nav-card-link" onClick={() => { navigate('/network'); setIsMobileMenuOpen(false); }}>Network</span>
+          <span className="mobile-nav-card-link" onClick={() => { navigate('/rescue'); setIsMobileMenuOpen(false); }}>Rescue Map</span>
+          <span className="mobile-nav-card-link" onClick={() => { navigate('/reports'); setIsMobileMenuOpen(false); }}>Reports</span>
+          
+          {/* Mobile Mode Toggle */}
+          <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px', width: '100%' }}>
+            <div 
+              className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
+              onClick={() => {
+                dataSourceManager.toggle();
+                setTick(t => t + 1);
+              }}
+              style={{ width: '100%' }}
+            >
+              <div className="segmented-slider"></div>
+              <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+                Simulation
+              </div>
+              <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+                Hardware
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="landing-content animate-fade-in" style={{ 
+        position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+        width: '100%', maxWidth: '1200px', padding: '0 20px', boxSizing: 'border-box',
+        display: 'flex', flexDirection: 'column', alignItems: 'center'
+      }}>
+        <h1 className="landing-title" style={{ 
+          fontSize: '6rem', 
+          marginBottom: '32px', 
+          fontWeight: '900', 
+          letterSpacing: '-1.5px', 
+          textTransform: 'none',
+          color: 'transparent',
+          filter: 'drop-shadow(0 0 25px rgba(201, 255, 0, 0.25))',
+          background: 'linear-gradient(180deg, #ffffff 0%, #c9ff00 100%)',
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          animation: 'none'
+        }}>
+          ResQMesh
         </h1>
-        <div className="landing-subtitle" style={{ marginBottom: 12, fontSize: '0.85rem', letterSpacing: 3 }}>
-          Rescue Routing System
-        </div>
-        <p className="landing-desc" style={{ fontSize: '1.1rem', maxWidth: '800px', lineHeight: '1.6' }}>
-          An Interactive Graph-Theory, Networking, and IoT Disaster Intelligence Platform.
-          Explore algorithms, visualize mesh networks, and simulate disaster rescue operations.
-        </p>
-        <div className="landing-buttons">
-          <button className="btn btn-primary" onClick={() => navigate('/command')}>
-            Launch Simulation
-          </button>
-          <button className="btn btn-yellow" onClick={() => navigate('/algorithms')}>
-            Explore Algorithms
-          </button>
-          <button className="btn btn-cyan" onClick={() => navigate('/network')}>
-            Network Center
-          </button>
-        </div>
+        
+        <button 
+          className="btn-landing-enter" 
+          onClick={() => navigate('/command')}
+        >
+          ENTER
+        </button>
       </div>
     </div>
   );

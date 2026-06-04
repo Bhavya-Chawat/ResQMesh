@@ -43,6 +43,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Import database module
+from database import save_telemetry, get_telemetry_history, get_analytics_summary
+
 MQTT_BROKER   = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT     = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
@@ -55,6 +58,7 @@ FLASK_DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
 HEARTBEAT_TIMEOUT         = float(os.getenv("HEARTBEAT_TIMEOUT", 6))
 NODE_FAILURE_CHECK_INTERVAL = float(os.getenv("NODE_FAILURE_CHECK_INTERVAL", 2))
+PAUSE_UNTIL = 0.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,8 +86,11 @@ class NodeState:
         self.id     = node_id
         self.label  = label or f"Node {node_id}"
         # Normalized canvas position (0..1) – sent to frontend
-        self.nx     = 0.5
-        self.ny     = 0.5
+        # Add a small deterministic offset based on the node ID so they don't overlap
+        offset_x = (ord(node_id[0]) % 5 - 2) * 0.08 if node_id else 0
+        offset_y = (ord(node_id[-1]) % 5 - 2) * 0.08 if node_id else 0
+        self.nx     = 0.5 + offset_x
+        self.ny     = 0.5 + offset_y
         self.last_heartbeat = time.time()
         self.data   = {
             "temperature":   25.0,
@@ -137,17 +144,39 @@ class NodeState:
             except (TypeError, ValueError):
                 pass
 
+        # Auto-correct DHT11 sensor read using DHT22 configuration
+        temp_val = self.data.get("temperature", 25.0)
+        hum_val = self.data.get("humidity", 50.0)
+
+        # If temperature or humidity is in the DHT11-read-as-DHT22 error range (temp > 100 or hum > 100),
+        # automatically correct it by recovering the original DHT11 bytes.
+        if temp_val > 100.0 or hum_val > 100.0:
+            def correct_dht11_fake_d22(val: float) -> float:
+                raw = int(round(val * 10))
+                high = raw // 256
+                low = raw % 256
+                return high + (low / 10.0)
+
+            if temp_val > 100.0:
+                temp_val = correct_dht11_fake_d22(temp_val)
+                temp_val = max(10.0, min(100.0, temp_val))
+                self.data["temperature"] = temp_val
+
+            if hum_val > 100.0:
+                hum_val = correct_dht11_fake_d22(hum_val)
+                hum_val = max(10.0, min(99.0, hum_val))
+                self.data["humidity"] = hum_val
+
         self._recalculate_status()
 
     def _recalculate_status(self):
-        if self.data["status"] == "failed":
-            return
         t   = self.data["temperature"]
         gas = self.data["gasLevel"]
-        bat = self.data["battery"]
-        if t > 60 or gas > 600 or bat < 15:
-            self.data["status"] = "critical"
-        elif t > 45 or gas > 400 or bat < 30:
+        # Only fail if gas is high (smoke) or temp is realistic but high (60 - 200)
+        # Ignore 0.0 battery and 691.9 disconnected temp
+        if (60.0 < t < 200.0) or gas > 210:
+            self.data["status"] = "failed"
+        elif (45.0 < t < 200.0) or gas > 160:
             self.data["status"] = "warning"
         else:
             self.data["status"] = "active"
@@ -177,6 +206,7 @@ class TopologyManager:
             "totalPacketsDelivered": 0,
             "totalPacketsDropped":   0,
         }
+        self.manual_weights = {} # tuple(sorted([node1, node2])) -> weight
 
     # ── Node CRUD ──────────────────────────────
 
@@ -194,6 +224,12 @@ class TopologyManager:
         with self._lock:
             node.last_heartbeat = time.time()
             if node.data["status"] == "failed":
+                # Only recover if the failure wasn't due to high sensor readings
+                t   = node.data["temperature"]
+                gas = node.data["gasLevel"]
+                if (60.0 < t < 200.0) or gas > 210:
+                    return "ok" # Keep it failed because sensors are still high
+                
                 node.data["status"] = "active"
                 log.info("Node recovered via heartbeat: %s", node_id)
                 return "recovered"
@@ -203,6 +239,24 @@ class TopologyManager:
         with self._lock:
             if node_id in self.nodes:
                 self.nodes[node_id].data["status"] = "failed"
+
+    def set_manual_weight(self, source: str, target: str, weight: float):
+        key = tuple(sorted([source, target]))
+        with self._lock:
+            self.manual_weights[key] = weight
+            # Update in NetworkX graph
+            if self.G.has_edge(source, target):
+                self.G[source][target]["weight"] = weight
+            # Update in self.edges list
+            existing = next(
+                (e for e in self.edges
+                 if (e["source"] == source and e["target"] == target) or
+                    (e["source"] == target and e["target"] == source)),
+                None
+            )
+            if existing:
+                existing["weight"] = weight
+                existing["data"]["latency"] = weight
 
     # ── Edge management ────────────────────────
 
@@ -222,7 +276,14 @@ class TopologyManager:
                 nb_id  = str(nb.get("id", nb.get("node_id", "")))
                 if not nb_id:
                     continue
-                weight = float(nb.get("latency", nb.get("weight", 10)))
+                
+                # Manual weight overrides defaults
+                edge_key = tuple(sorted([node_id, nb_id]))
+                if edge_key in self.manual_weights:
+                    weight = self.manual_weights[edge_key]
+                else:
+                    weight = 2.0
+                
                 rssi   = float(nb.get("rssi", -50))
 
                 # Ensure neighbour node exists
@@ -326,6 +387,9 @@ topology = TopologyManager()
 def failure_watcher():
     while True:
         eventlet.sleep(NODE_FAILURE_CHECK_INTERVAL)
+        global PAUSE_UNTIL
+        if time.time() < PAUSE_UNTIL:
+            continue
         failed = topology.check_failures()
         for node_id in failed:
             node = topology.nodes.get(node_id)
@@ -366,6 +430,9 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
+    global PAUSE_UNTIL
+    if time.time() < PAUSE_UNTIL:
+        return
     topic   = msg.topic
     node_id, msg_type = _parse_topic(topic)
     if not node_id:
@@ -373,7 +440,8 @@ def on_message(client, userdata, msg):
 
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        log.error("Failed to parse JSON on topic %s: %s (payload: %r)", topic, e, msg.payload)
         payload = {}
 
     if msg_type == "sensor":
@@ -388,7 +456,21 @@ def on_message(client, userdata, msg):
 
 def _handle_sensor(node_id: str, payload: dict):
     node = topology.get_or_create_node(node_id, payload.get("label"))
+    raw_temp = payload.get("temperature", payload.get("temp", "N/A"))
+    raw_gas = payload.get("gasLevel", payload.get("gas", "N/A"))
     node.update_sensors(payload)
+    log.info("[MQTT Sensor] Node %s -> Raw Temp: %s, Raw Gas: %s | Corrected Temp: %.1f, Corrected Gas: %.1f", 
+             node_id, raw_temp, raw_gas, node.data["temperature"], node.data["gasLevel"])
+             
+    # Log telemetry entry to database (Supabase/SQLite)
+    save_telemetry(
+        node_id=node_id,
+        temperature=node.data["temperature"],
+        humidity=node.data["humidity"],
+        gas_level=node.data["gasLevel"],
+        battery=node.data["battery"]
+    )
+    
     socketio.emit("node_update", {
         "nodeId": node_id,
         "node":   node.to_dict(),
@@ -459,6 +541,32 @@ def api_topology():
     return jsonify(topology.snapshot())
 
 
+@app.route("/api/edges/weight", methods=["POST"])
+def api_update_edge_weight():
+    data = request.json or {}
+    source = data.get("source")
+    target = data.get("target")
+    weight = data.get("weight")
+    if not source or not target or weight is None:
+        return jsonify({"error": "Missing parameters"}), 400
+    try:
+        w_val = float(weight)
+    except ValueError:
+        return jsonify({"error": "Invalid weight"}), 400
+
+    # Apply manual weight
+    topology.set_manual_weight(source, target, w_val)
+
+    # Trigger a 2-second global pause
+    global PAUSE_UNTIL
+    PAUSE_UNTIL = time.time() + 2.0
+
+    # Notify clients
+    socketio.emit("topology_update", topology.snapshot())
+    socketio.emit("stats_update", topology.get_health())
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/nodes", methods=["GET"])
 def api_nodes():
     return jsonify({"nodes": [n.to_dict() for n in topology.nodes.values()]})
@@ -512,6 +620,25 @@ def api_mqtt_status():
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"status": "online", "mode": "hardware"})
+
+
+@app.route("/api/reports/history", methods=["GET"])
+def api_reports_history():
+    node_id = request.args.get("node_id", None)
+    if node_id == "all" or node_id == "":
+        node_id = None
+    try:
+        limit = int(request.args.get("limit", 150))
+    except ValueError:
+        limit = 150
+    records = get_telemetry_history(node_id=node_id, limit=limit)
+    return jsonify(records)
+
+
+@app.route("/api/reports/analytics", methods=["GET"])
+def api_reports_analytics():
+    summary = get_analytics_summary()
+    return jsonify(summary)
 
 # ──────────────────────────────────────────────
 # WebSocket Events

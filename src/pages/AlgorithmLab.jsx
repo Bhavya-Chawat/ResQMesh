@@ -155,6 +155,11 @@ export default function AlgorithmLab() {
   const [highlightData, setHighlightData] = useState(null);
   const intervalRef = useRef(null);
 
+  const highlightDataRef = useRef(highlightData);
+  useEffect(() => {
+    highlightDataRef.current = highlightData;
+  }, [highlightData]);
+
   const algo = ALGORITHMS[activeAlgo];
   const nodeIds = Array.from(graph.nodes.keys());
 
@@ -241,12 +246,44 @@ export default function AlgorithmLab() {
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // Grid
-      ctx.strokeStyle = 'rgba(255,101,63,0.03)';
-      for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-      for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+      // ── Canvas background grid ──
+      const GRID = 55;
+      // Vertical grid lines (chartreuse)
+      ctx.strokeStyle = 'rgba(201,255,0,0.18)';
+      ctx.lineWidth = 0.8;
+      for (let x = 0; x < w; x += GRID) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      // Horizontal grid lines (cyan)
+      ctx.strokeStyle = 'rgba(0,229,255,0.13)';
+      for (let y = 0; y < h; y += GRID) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+      // Intersection dot markers
+      ctx.fillStyle = 'rgba(201,255,0,0.32)';
+      for (let x = 0; x < w; x += GRID) {
+        for (let y = 0; y < h; y += GRID) {
+          ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      // Corner brackets
+      const bS = 22;
+      ctx.strokeStyle = 'rgba(201,255,0,0.45)';
+      ctx.lineWidth = 1.5;
+      [[0,0,1,1],[w,0,-1,1],[0,h,1,-1],[w,h,-1,-1]].forEach(([bx,by,sx,sy]) => {
+        ctx.beginPath();
+        ctx.moveTo(bx + sx*bS, by); ctx.lineTo(bx, by); ctx.lineTo(bx, by + sy*bS);
+        ctx.stroke();
+      });
+      // Center crosshair
+      ctx.strokeStyle = 'rgba(0,229,255,0.1)';
+      ctx.lineWidth = 0.6;
+      ctx.setLineDash([3, 6]);
+      ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
+      ctx.setLineDash([]);
 
-      const step = highlightData;
+      const step = highlightDataRef.current;
       const visitedSet = step?.visited || step?.inMST || new Set();
       const relaxEdge = step?.relaxEdge;
       const mstEdges = step?.mstEdges || [];
@@ -375,12 +412,12 @@ export default function AlgorithmLab() {
     }
     draw();
     return () => { cancelAnimationFrame(animId); ro.disconnect(); };
-  }, [graph, highlightData]);
+  }, [graph]);
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1 className="page-title glow-text-yellow">Algorithm and Network Intelligence Center</h1>
+    <div className="page-container animate-fade-in" style={{ padding: '24px 40px', width: '100%', boxSizing: 'border-box' }}>
+      <div className="page-header" style={{ marginBottom: '20px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <h2 className="page-title" style={{ fontSize: '2.2rem', fontWeight: '850', letterSpacing: '-0.5px', textTransform: 'none' }}>Algorithm Lab</h2>
       </div>
 
       {/* Algorithm Tabs */}
@@ -400,7 +437,7 @@ export default function AlgorithmLab() {
         {/* Graph Visualization */}
         <div className="panel glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            <label style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
               Source:
             </label>
             <select
@@ -434,7 +471,7 @@ export default function AlgorithmLab() {
             </div>
           )}
 
-          <div ref={containerRef} style={{ flex: 1, minHeight: 300, position: 'relative', marginTop: 8 }}>
+          <div ref={containerRef} style={{ height: '680px', position: 'relative', marginTop: 8 }}>
             <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
           </div>
         </div>

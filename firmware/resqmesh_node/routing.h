@@ -245,7 +245,7 @@ public:
     if (!esp_now_is_peer_exist(BROADCAST)) {
       esp_now_peer_info_t pi = {};
       memcpy(pi.peer_addr, BROADCAST, 6);
-      pi.channel = ESPNOW_CHANNEL;
+      pi.channel = 0;
       pi.encrypt = false;
       esp_now_add_peer(&pi);
     }
