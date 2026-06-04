@@ -201,6 +201,20 @@ void publishSensor() {
   float gas  = readGasLevel();
   float bat  = readBatteryPercent();
 
+  // Control green and red LEDs based on sensor thresholds (Temp > 45°C or Gas > 160 ppm)
+  bool unusual = false;
+  if (!isnan(temp) && (temp > 45.0f || gas > 160.0f)) {
+    unusual = true;
+  }
+
+  if (unusual) {
+    digitalWrite(LED_GREEN_PIN, LOW);
+    digitalWrite(LED_RED_PIN, HIGH);
+  } else {
+    digitalWrite(LED_GREEN_PIN, HIGH);
+    digitalWrite(LED_RED_PIN, LOW);
+  }
+
   // Build JSON payload
   StaticJsonDocument<256> doc;
   doc["nodeId"]      = NODE_ID;
@@ -323,6 +337,13 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   dht.begin();
+
+  // Initialize LED pins
+  pinMode(LED_GREEN_PIN, OUTPUT);
+  pinMode(LED_RED_PIN, OUTPUT);
+  // Default to normal operation state (Green ON, Red OFF)
+  digitalWrite(LED_GREEN_PIN, HIGH);
+  digitalWrite(LED_RED_PIN, LOW);
 
 #if IS_GATEWAY
   // ── Gateway: WiFi station + AP (AP keeps a fixed channel for ESP-NOW) ──

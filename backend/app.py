@@ -43,6 +43,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Import database module
+from database import save_telemetry, get_telemetry_history, get_analytics_summary
+
 MQTT_BROKER   = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT     = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
@@ -458,6 +461,16 @@ def _handle_sensor(node_id: str, payload: dict):
     node.update_sensors(payload)
     log.info("[MQTT Sensor] Node %s -> Raw Temp: %s, Raw Gas: %s | Corrected Temp: %.1f, Corrected Gas: %.1f", 
              node_id, raw_temp, raw_gas, node.data["temperature"], node.data["gasLevel"])
+             
+    # Log telemetry entry to database (Supabase/SQLite)
+    save_telemetry(
+        node_id=node_id,
+        temperature=node.data["temperature"],
+        humidity=node.data["humidity"],
+        gas_level=node.data["gasLevel"],
+        battery=node.data["battery"]
+    )
+    
     socketio.emit("node_update", {
         "nodeId": node_id,
         "node":   node.to_dict(),
@@ -607,6 +620,25 @@ def api_mqtt_status():
 @app.route("/api/status", methods=["GET"])
 def api_status():
     return jsonify({"status": "online", "mode": "hardware"})
+
+
+@app.route("/api/reports/history", methods=["GET"])
+def api_reports_history():
+    node_id = request.args.get("node_id", None)
+    if node_id == "all" or node_id == "":
+        node_id = None
+    try:
+        limit = int(request.args.get("limit", 150))
+    except ValueError:
+        limit = 150
+    records = get_telemetry_history(node_id=node_id, limit=limit)
+    return jsonify(records)
+
+
+@app.route("/api/reports/analytics", methods=["GET"])
+def api_reports_analytics():
+    summary = get_analytics_summary()
+    return jsonify(summary)
 
 # ──────────────────────────────────────────────
 # WebSocket Events

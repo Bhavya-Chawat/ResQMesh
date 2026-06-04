@@ -137,6 +137,24 @@ export class SimulationEngine {
     this.notify();
   }
 
+  setSpeed(speed) {
+    this.tickRate = 1000 / speed;
+    this.packetRate = 2000 / speed;
+    if (this.isRunning) {
+      clearInterval(this._sensorInterval);
+      clearInterval(this._packetInterval);
+      this._sensorInterval = setInterval(() => {
+        this.graph.updateSensors();
+        this.checkAlerts();
+        this.notify();
+      }, this.tickRate);
+      this._packetInterval = setInterval(() => {
+        this.generateRandomPacket();
+        this.notify();
+      }, this.packetRate);
+    }
+  }
+
   generateRandomPacket() {
     const activeNodes = Array.from(this.graph.nodes.values()).filter(n => n.data.status !== 'failed');
     if (activeNodes.length < 2) return;

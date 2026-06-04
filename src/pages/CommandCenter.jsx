@@ -11,7 +11,7 @@ function nodePos(node, w, h, pad = 55) {
 }
 
 export default function CommandCenter() {
-  const { graph, sim, dataSourceManager } = useApp();
+  const { graph, sim, dataSourceManager, theme } = useApp();
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [selectedNode, setSelectedNode] = useState(null);
@@ -27,6 +27,37 @@ export default function CommandCenter() {
   // Custom states for architectural redesign
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [tableData, setTableData] = useState([]);
+  const [simSpeed, setSimSpeed] = useState(1);
+
+  const handleToggleSim = () => {
+    if (sim.isRunning) {
+      sim.stop();
+    } else {
+      sim.start();
+    }
+    setTick(t => t + 1);
+  };
+
+  const handleReset = () => {
+    sim.stop();
+    graph.resetToPreset(preset, nodeCount);
+    sim.packets = [];
+    sim.activePackets = [];
+    sim.stats = {
+      totalPacketsSent: 0,
+      totalPacketsDelivered: 0,
+      totalPacketsDropped: 0,
+      avgLatency: 0,
+      throughput: 0
+    };
+    sim.eventLog.clear();
+    sim.eventLog.add('info', 'Simulation reset');
+    setSelectedNode(null);
+    if (!dataSourceManager.isHardware) {
+      sim.start();
+    }
+    setTick(t => t + 1);
+  };
 
   const handleResetMesh = () => {
     graph.resetToPreset(preset, nodeCount);
@@ -83,16 +114,23 @@ export default function CommandCenter() {
       timeRef.current += 0.016;
       const t = timeRef.current;
       const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
+      const w = canvas.width;
+      const h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // ── Grid ──
-      ctx.strokeStyle = 'rgba(255,101,63,0.04)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-      for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+      const isLight = theme === 'light';
 
-      const PAD = 55;
+      // ── Dotted Grid (Nash.ai style) ──
+      ctx.fillStyle = isLight ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.08)';
+      for (let x = 20; x < w; x += 40) {
+        for (let y = 20; y < h; y += 40) {
+          ctx.beginPath();
+          ctx.arc(x, y, 1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      const PAD = 65;
 
       // ── Edges ──
       for (const edge of graph.edges) {
@@ -103,8 +141,10 @@ export default function CommandCenter() {
         const tp = nodePos(tgt, w, h, PAD);
         const failed = src.data.status === 'failed' || tgt.data.status === 'failed';
 
-        ctx.strokeStyle = failed ? 'rgba(255,23,68,0.2)' : 'rgba(255,200,92,0.25)';
-        ctx.lineWidth = failed ? 1 : 1.5;
+        ctx.strokeStyle = failed 
+          ? (isLight ? 'rgba(255,138,128,0.3)' : 'rgba(255,23,68,0.25)') 
+          : (isLight ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.12)');
+        ctx.lineWidth = failed ? 1.5 : 2.5;
         ctx.setLineDash(failed ? [4, 4] : []);
         ctx.beginPath();
         ctx.moveTo(sp.x, sp.y);
@@ -113,19 +153,19 @@ export default function CommandCenter() {
 
         // Weight label
         if (!failed) {
-          ctx.font = '10px "Share Tech Mono"';
-          ctx.fillStyle = 'rgba(255,200,92,0.55)';
+          ctx.font = 'bold 11px "Geist Mono", monospace';
+          ctx.fillStyle = isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.45)';
           ctx.textAlign = 'center';
           ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 5);
         }
 
-        // Animated flow dots on active edges
+        // Animated flow dots on active edges (Nash.ai style)
         if (!failed) {
-          const flowOff = (t * 40) % 20;
+          const flowOff = (t * 30) % 20;
           ctx.setLineDash([3, 17]);
           ctx.lineDashOffset = -flowOff;
-          ctx.strokeStyle = 'rgba(0,229,255,0.3)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = isLight ? 'rgba(255,255,255,0.75)' : 'rgba(201,255,0,0.6)';
+          ctx.lineWidth = 2.0;
           ctx.beginPath();
           ctx.moveTo(sp.x, sp.y);
           ctx.lineTo(tp.x, tp.y);
@@ -138,6 +178,7 @@ export default function CommandCenter() {
       // ── Active Packets ──
       for (const pkt of sim.activePackets) {
         if (!pkt.path || pkt.path.length < 2) continue;
+
         const progress = (t * 0.45) % 1;
         const totalSegs = pkt.path.length - 1;
         const segFloat = progress * totalSegs;
@@ -152,9 +193,16 @@ export default function CommandCenter() {
         const py = sp.y + (ep.y - sp.y) * segT;
 
         const color = pkt.getPriorityColor();
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 12;
-        ctx.fillStyle = color;
+        let dotColor;
+        if (isLight) {
+          dotColor = '#ffffff';
+        } else {
+          dotColor = color === '#39FF14' || color === 'var(--neon-green)' ? '#c9ff00' : color;
+        }
+        
+        ctx.fillStyle = dotColor;
+        ctx.shadowColor = dotColor;
+        ctx.shadowBlur = isLight ? 3 : 8;
         ctx.beginPath();
         ctx.arc(px, py, 4.5, 0, Math.PI * 2);
         ctx.fill();
@@ -169,39 +217,27 @@ export default function CommandCenter() {
 
         const isGateway = id === 'A' && dataSourceManager?.isHardware;
 
-        // Sync legacy .x/.y for algorithm pages that still use them
+        // Sync legacy .x/.y for algorithm pages
         node.x = x;
         node.y = y;
 
-        // Pulse glow
-        let glowColor;
-        if (isGateway) glowColor = 'rgba(255,215,0,0.45)'; // Golden glow for Gateway Main Server
-        else if (status === 'failed') glowColor = 'rgba(255,23,68,0.35)';
-        else if (status === 'critical') glowColor = 'rgba(255,101,63,0.45)';
-        else if (status === 'warning') glowColor = 'rgba(255,200,92,0.35)';
-        else glowColor = 'rgba(0,229,255,0.22)';
-
-        const pulseR = (isSel ? 30 : 24) + Math.sin(t * 2.2 + node.nx * 6.28) * 5;
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, pulseR);
-        grad.addColorStop(0, glowColor);
-        grad.addColorStop(1, 'transparent');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, pulseR, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Node body
-        const r = isSel ? (isGateway ? 18 : 14) : (isGateway ? 14 : 10);
+        // Node base colors based on theme
+        const activeColor = isLight ? '#ffffff' : '#c9ff00';
+        const gatewayColor = '#FFD700';
+        
         let fillColor;
-        if (isGateway) fillColor = '#FFD700'; // Gold color for Gateway Main Server!
-        else if (status === 'failed') fillColor = '#FF1744';
-        else if (status === 'critical') fillColor = '#FF653F';
-        else if (status === 'warning') fillColor = '#FFC85C';
-        else fillColor = '#00E5FF';
+        if (isGateway) fillColor = gatewayColor;
+        else if (status === 'failed') fillColor = isLight ? '#ff8a80' : '#FF1744';
+        else if (status === 'critical') fillColor = isLight ? '#ffb74d' : '#FF9100';
+        else if (status === 'warning') fillColor = isLight ? '#ffe082' : '#FFC85C';
+        else fillColor = activeColor;
+
+        // Node core body (Larger visible dot)
+        const r = isSel ? (isGateway ? 24 : 18) : (isGateway ? 18 : 14);
 
         ctx.fillStyle = fillColor;
         ctx.shadowColor = fillColor;
-        ctx.shadowBlur = isSel ? 20 : 10;
+        ctx.shadowBlur = isSel ? (isLight ? 8 : 18) : (isLight ? 3 : 8);
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
@@ -209,14 +245,14 @@ export default function CommandCenter() {
 
         // Selection ring
         if (isSel) {
-          ctx.strokeStyle = '#FFC85C';
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = fillColor;
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+          ctx.arc(x, y, r + 8, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        // ESP32 label
+        // ESP32 label (placed cleanly at top/bottom of node)
         let labelText = node.label;
         if (dataSourceManager?.isHardware) {
           if (id === 'A') {
@@ -225,23 +261,25 @@ export default function CommandCenter() {
             labelText = `Sub-Server ${id}`;
           }
         }
-        ctx.font = 'bold 10px "Orbitron", monospace';
-        ctx.fillStyle = isGateway ? '#FFD700' : '#f0eaf8';
+        ctx.font = 'bold 11px "Geist Mono", monospace';
+        ctx.fillStyle = isLight ? '#ffffff' : (isGateway ? '#FFD700' : 'rgba(255,255,255,0.75)');
         ctx.textAlign = 'center';
-        ctx.fillText(labelText, x, y - r - 8);
+        ctx.fillText(labelText, x, y - r - 10);
 
-        // Alert blink
+        // Alert text (emojiless alert label)
         if (status === 'critical' || status === 'warning') {
-            ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 5, y - 4);
+            ctx.font = 'bold 11px "Geist Mono", monospace';
+            ctx.fillStyle = status === 'critical' ? (isLight ? '#ff8a80' : '#FF1744') : '#FFC85C';
+            ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 8, y + 4);
         }
 
-        // Battery micro-bar
-        const bw = 28, bh = 4;
-        const bx = x - bw / 2, by = y + r + 3;
-        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        // Battery micro-bar (drawn elegantly below node)
+        const bw = 24, bh = 4;
+        const bx = x - bw / 2, by = y + r + 10;
+        ctx.fillStyle = isLight ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)';
         ctx.fillRect(bx, by, bw, bh);
         const pct = node.data.battery / 100;
-        ctx.fillStyle = pct < 0.15 ? '#FF1744' : pct < 0.3 ? '#FFC85C' : '#39FF14';
+        ctx.fillStyle = pct < 0.15 ? (isLight ? '#ff8a80' : '#FF1744') : pct < 0.3 ? '#FFC85C' : (isLight ? '#ffffff' : '#c9ff00');
         ctx.fillRect(bx, by, bw * pct, bh);
       }
 
@@ -253,7 +291,7 @@ export default function CommandCenter() {
       cancelAnimationFrame(animRef.current);
       ro.disconnect();
     };
-  }, [graph, sim, selectedNode]);
+  }, [graph, sim, selectedNode, theme]);
 
   // ── Mouse: select & drag ──────────────────────────────────────────
   const handleMouseDown = useCallback((e) => {
@@ -331,28 +369,10 @@ export default function CommandCenter() {
   const events = sim.eventLog.getRecent(30);
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1 className="page-title glow-text-orange">Command Center</h1>
-        <div className="page-controls">
-          {/* Mode Toggle Button */}
-          <button 
-            className="btn btn-sm" 
-            style={{
-              borderColor: dataSourceManager?.isHardware ? 'var(--neon-green)' : 'var(--neon-cyan)',
-              color: dataSourceManager?.isHardware ? 'var(--neon-green)' : 'var(--neon-cyan)',
-              background: dataSourceManager?.isHardware ? 'rgba(57,255,20,0.08)' : 'rgba(0,229,255,0.08)',
-              marginRight: '8px'
-            }}
-            onClick={() => {
-              dataSourceManager.toggle();
-              setSelectedNode(null);
-              setTick(t => t + 1);
-            }}
-          >
-            {dataSourceManager?.isHardware ? '🔌 Mode: Hardware' : '💻 Mode: Simulation'}
-          </button>
-
+    <div className="page-container animate-fade-in" style={{ padding: '24px 40px', width: '100%', boxSizing: 'border-box' }}>
+      <div className="page-header" style={{ marginBottom: '20px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <h2 className="page-title" style={{ fontSize: '1.4rem', fontWeight: '800', letterSpacing: '-0.5px', textTransform: 'none' }}>Command Center</h2>
+        <div className="page-controls" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
           {!dataSourceManager?.isHardware ? (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <select
@@ -360,7 +380,7 @@ export default function CommandCenter() {
                 onChange={e => setPreset(e.target.value)}
                 style={{
                   fontFamily: 'var(--font-mono)', fontSize: '0.72rem', background: 'rgba(10,6,24,0.6)',
-                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '4px 6px',
+                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '4px 10px',
                 }}
               >
                 <option value="ring">Ring Network</option>
@@ -373,7 +393,7 @@ export default function CommandCenter() {
                 onChange={e => setNodeCount(Number(e.target.value))}
                 style={{
                   fontFamily: 'var(--font-mono)', fontSize: '0.72rem', background: 'rgba(10,6,24,0.6)',
-                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 4, padding: '4px 6px',
+                  color: 'var(--warm-yellow)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: '4px 10px',
                 }}
               >
                 {[3, 5, 8, 10, 12, 15].map(n => (
@@ -384,75 +404,106 @@ export default function CommandCenter() {
             </div>
           ) : (
             <div style={{ marginRight: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-              Auto-Detected: <strong style={{ color: 'var(--neon-green)' }}>{health.activeNodes}</strong>
+               Auto-Detected: <strong style={{ color: 'var(--nash-chartreuse)' }}>{health.activeNodes}</strong>
             </div>
           )}
-          <button className="btn btn-sm" onClick={() => sim.isRunning ? sim.stop() : sim.start()}>
-            {sim.isRunning ? '⏸ Pause' : '▶ Start'}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 16 }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>SPEED</span>
+            <input
+              type="range"
+              min="0.2"
+              max="3"
+              step="0.2"
+              value={simSpeed}
+              onChange={(e) => {
+                const spd = Number(e.target.value);
+                setSimSpeed(spd);
+                sim.setSpeed(spd);
+              }}
+              style={{ width: 60, cursor: 'pointer', accentColor: 'var(--nash-chartreuse)' }}
+            />
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', minWidth: 28 }}>{simSpeed.toFixed(1)}x</span>
+          </div>
+
+          <button className="btn btn-primary" onClick={handleToggleSim} style={{ padding: '6px 16px', fontWeight: '600' }}>
+            {sim.isRunning ? 'Pause' : 'Start'}
           </button>
-          {!dataSourceManager?.isHardware && (
-            <button className="btn btn-sm btn-cyan" onClick={addNode}>+ Node</button>
-          )}
-          {selectedNode && <>
-            <button className="btn btn-sm btn-cyan" onClick={() => sim.recoverNode(selectedNode)}>Recover Node</button>
-          </>}
+          <button className="btn" onClick={handleReset} style={{ padding: '6px 16px', borderColor: 'rgba(255,255,255,0.1)' }}>
+            Reset
+          </button>
         </div>
       </div>
 
-      {/* Stat Strip */}
-      <div className="stat-strip">
-        {[
-          { 
-            label: dataSourceManager?.isHardware ? 'Live ESP Nodes' : 'Active Nodes', 
-            value: `${health.activeNodes}/${health.totalNodes}`, 
-            cls: '' 
-          },
-          { label: 'Active Edges', value: health.activeEdges, cls: 'yellow' },
-          { label: 'Packets Sent', value: health.packetsSent, cls: 'cyan' },
-          { label: 'Delivery Rate', value: `${health.deliveryRate}%`, cls: 'green' },
-          { label: 'Avg Latency', value: `${health.avgLatency.toFixed(1)}ms`, cls: 'yellow' },
-          { label: 'Graph Density', value: `${(health.density * 100).toFixed(0)}%`, cls: '' },
-        ].map(s => (
-          <div key={s.label} className="stat-card glass-panel">
-            <div className="stat-label">{s.label}</div>
-            <div className={`stat-value ${s.cls}`}>{s.value}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Main Grid */}
-      <div className="dashboard-grid">
-        {/* Topology Canvas */}
-        <div className="topology-area panel glass-panel topo-container">
-          <div className="topo-controls">
-            <span className="section-header" style={{ margin: 0, border: 'none', paddingBottom: 0 }}>
-              Live Topology — ESP32 Mesh Network
+      {/* Main Grid: Left side (Topology + Table), Right side (Inspector + Logs) */}
+      <div className="command-grid">
+        
+        {/* Topology Canvas Card */}
+        <div className="panel glass-panel topo-container topo-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: '680px', position: 'relative', padding: '16px', marginBottom: 0 }}>
+          <div className="topo-controls" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: '#ffffff', fontFamily: 'var(--font-display)', letterSpacing: '0.5px' }}>
+              Live Topology Map — Autonomic Mesh
             </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-              {sim.isRunning ? '● LIVE' : '○ PAUSED'} · Click node to inspect · Drag to reposition
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+              {sim.isRunning ? '● LIVE MONITORING' : '○ PAUSED'} · Click node to inspect
             </span>
           </div>
-          <div className="topo-canvas-wrap" ref={containerRef}>
+          
+          <div className="topo-canvas-wrap" ref={containerRef} style={{ flex: 1, position: 'relative', borderRadius: '8px', overflow: 'hidden' }}>
             <canvas
               ref={canvasRef}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              style={{ cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
+              style={{ width: '100%', height: '100%', display: 'block', cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
             />
+
+            {/* Floating Metrics Overlay (Nash.ai Style, Screenshot 3) */}
+            <div style={{
+              position: 'absolute',
+              bottom: '12px',
+              left: '12px',
+              right: '12px',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(5, 1fr)',
+              gap: '8px',
+              zIndex: 5
+            }}>
+              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Nodes Active</div>
+                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#ffffff' }}>{health.activeNodes}</div>
+              </div>
+              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Delivery Rate</div>
+                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: 'var(--nash-chartreuse)' }}>{health.deliveryRate}%</div>
+              </div>
+              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Avg Latency</div>
+                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#ffffff' }}>{health.avgLatency.toFixed(1)}ms</div>
+              </div>
+              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Grid Density</div>
+                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#ffffff' }}>{(health.density * 100).toFixed(0)}%</div>
+              </div>
+              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
+                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Avg Battery</div>
+                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: health.avgBattery < 30 ? 'var(--neon-red)' : 'var(--nash-chartreuse)' }}>{health.avgBattery.toFixed(0)}%</div>
+              </div>
+            </div>
+            
             {isAdjusting && (
               <div style={{
                 position: 'absolute',
                 top: 0, left: 0, right: 0, bottom: 0,
-                background: 'rgba(10,6,24,0.85)',
+                background: 'rgba(1,5,30,0.85)',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 zIndex: 10,
                 backdropFilter: 'blur(4px)',
                 fontFamily: 'var(--font-display)',
-                color: 'var(--neon-orange)'
+                color: 'var(--nash-chartreuse)'
               }}>
-                <div className="glow-text-orange" style={{ fontSize: '1.2rem', fontWeight: 'bold', letterSpacing: 2, marginBottom: 8 }}>
+                <div style={{ fontSize: '1.2rem', fontWeight: 'bold', letterSpacing: 2, marginBottom: 8, color: 'var(--nash-chartreuse)' }}>
                   Adjusting network layout...
                 </div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
@@ -463,164 +514,8 @@ export default function CommandCenter() {
           </div>
         </div>
 
-        {/* Inspector Panel */}
-        <div className="inspector-area panel glass-panel">
-          <div className="section-header">Node Inspector</div>
-
-          {sel ? (
-            <div className="panel-scroll animate-slide-in">
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '12px', fontWeight: 'bold', border: '2px solid rgba(255,255,255,0.2)' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
-                  Delete Node
-                </button>
-                <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '12px', fontWeight: 'bold' }} onClick={() => sim.failNode(selectedNode)}>
-                  Fail Node
-                </button>
-              </div>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--neon-orange)', marginBottom: 8 }}>
-                {dataSourceManager?.isHardware ? (sel.id === 'A' ? "Main Server" : `Sub-Server ${sel.id}`) : sel.label}
-              </h3>
-              <span className={`badge ${sel.data.status === 'active' ? 'badge-green' : sel.data.status === 'warning' ? 'badge-yellow' : 'badge-red'}`} style={{ marginBottom: 12 }}>
-                {sel.data.status.toUpperCase()}
-              </span>
-
-              {/* Node-specific sensor values displayed in a dedicated toggle popup card */}
-              <div className="glass-panel" style={{ padding: '12px 14px', borderRadius: 8, border: '1px solid rgba(255,101,63,0.15)', background: 'rgba(10,6,24,0.4)', marginBottom: 16 }}>
-                <div style={{ fontFamily: 'var(--font-display)', color: 'var(--neon-orange)', fontSize: '0.72rem', letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  📡 {sel.id === 'A' ? 'Main Server Metrics' : `Sub-Server ${sel.id} Sensors`}
-                </div>
-                <table className="data-table">
-                  <tbody>
-                    <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
-                    <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
-                    <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 210 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="section-header" style={{ marginTop: 16 }}>Detailed Info</div>
-              <table className="data-table" style={{ marginBottom: 16 }}>
-                <tbody>
-                  {sel.id !== 'A' && <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>}
-                  <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
-                  <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
-                  <tr><td>Throughput</td><td>{sel.data.throughput.toFixed(0)} kbps</td></tr>
-                  <tr><td>Signal</td><td>{sel.data.signalQuality.toFixed(0)}%</td></tr>
-                </tbody>
-              </table>
-
-              {/* Edge Weight Editor */}
-              <div className="section-header" style={{ marginTop: 16 }}>Link Weights (Default: 2)</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-                {graph.edges.filter(e => e.source === sel.id || e.target === sel.id).length > 0 ? (
-                  graph.edges.filter(e => e.source === sel.id || e.target === sel.id).map(edge => {
-                    const peerId = edge.source === sel.id ? edge.target : edge.source;
-                    const peerLabel = dataSourceManager?.isHardware ? `Sub-Server ${peerId}` : (graph.nodes.get(peerId)?.label || peerId);
-                    return (
-                      <div key={`${edge.source}-${edge.target}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                        <span style={{ color: 'var(--text-secondary)' }}>Link to {peerLabel}:</span>
-                        <input
-                          type="number"
-                          min="1"
-                          max="100"
-                          defaultValue={edge.weight}
-                          style={{
-                            width: 60,
-                            background: 'rgba(0,0,0,0.6)',
-                            color: 'var(--neon-orange)',
-                            border: '1px solid var(--border-subtle)',
-                            borderRadius: 4,
-                            padding: '2px 6px',
-                            fontFamily: 'var(--font-mono)',
-                            textAlign: 'center'
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') e.target.blur();
-                          }}
-                          onBlur={async (e) => {
-                            const newWeight = Number(e.target.value);
-                            if (isNaN(newWeight) || newWeight < 1) return;
-                            
-                            setIsAdjusting(true);
-                            const prevIsRunning = sim.isRunning;
-                            sim.stop();
-
-                            edge.weight = newWeight;
-                            edge.data.latency = newWeight;
-
-                            if (dataSourceManager?.isHardware) {
-                              try {
-                                await fetch('/api/edges/weight', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({
-                                    source: edge.source,
-                                    target: edge.target,
-                                    weight: newWeight
-                                  })
-                                });
-                              } catch (err) {
-                                console.error("Failed to update edge weight:", err);
-                              }
-                            }
-
-                            setTimeout(() => {
-                              setIsAdjusting(false);
-                              if (prevIsRunning) {
-                                sim.start();
-                              }
-                              setTick(t => t + 1);
-                            }, 2000);
-                          }}
-                        />
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', padding: 8 }}>
-                    No active connections
-                  </div>
-                )}
-              </div>
-
-              <div className="section-header" style={{ marginTop: 16 }}>Routing Table</div>
-              <div className="routing-table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Dest</th><th>Next Hop</th><th>Cost</th><th>Hops</th></tr></thead>
-                  <tbody>
-                    {graph.getRoutingTable(selectedNode).map(r => (
-                      <tr key={r.destination}>
-                        <td>{r.destLabel}</td>
-                        <td style={{ color: 'var(--neon-cyan)' }}>{r.nextHopLabel}</td>
-                        <td>{r.distance === Infinity ? '∞' : r.distance.toFixed(1)}</td>
-                        <td>{r.hopCount}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : (
-            <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: 20, textAlign: 'center', marginTop: 40 }}>
-              <div style={{ fontSize: '2rem', marginBottom: 12, opacity: 0.3 }}>◎</div>
-              Click any node on the<br />topology to inspect it
-            </div>
-          )}
-
-          {/* Event Log */}
-          <div className="section-header" style={{ marginTop: 16 }}>Live Event Stream</div>
-          <div className="panel-scroll" style={{ maxHeight: 220 }}>
-            {events.map(ev => (
-              <div key={ev.id} className={`event-item ${ev.type}`}>
-                <span style={{ opacity: 0.45, marginRight: 6, fontSize: '0.65rem' }}>{ev.timestamp.toLocaleTimeString()}</span>
-                {ev.message}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Sub-Servers Data Table */}
-        <div className="subnodes-table-area panel glass-panel">
+        {/* Sub-Servers Distributed Monitor Card */}
+        <div className="panel glass-panel table-panel" style={{ height: '220px', minHeight: '220px', padding: '16px', display: 'flex', flexDirection: 'column', marginBottom: 0 }}>
           <div className="section-header" style={{ marginBottom: 8 }}>Distributed Sub-Servers Monitor</div>
           <div className="panel-scroll" style={{ flex: 1 }}>
             <table className="data-table">
@@ -666,19 +561,145 @@ export default function CommandCenter() {
           </div>
         </div>
 
-        {/* Analytics Strip */}
-        <div className="analytics-strip panel glass-panel" style={{ maxHeight: 90 }}>
-          <div className="section-header" style={{ marginBottom: 4 }}>Live Analytics</div>
-          <div style={{ display: 'flex', gap: 24, fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
-            <span>📦 Sent: <strong style={{ color: 'var(--neon-cyan)' }}>{health.packetsSent}</strong></span>
-            <span>✅ Delivered: <strong style={{ color: 'var(--neon-green)' }}>{health.packetsDelivered}</strong></span>
-            <span>❌ Dropped: <strong style={{ color: 'var(--neon-red)' }}>{health.packetsDropped}</strong></span>
-            <span>🔋 Avg Battery: <strong style={{ color: health.avgBattery < 30 ? 'var(--neon-red)' : 'var(--neon-green)' }}>{health.avgBattery.toFixed(1)}%</strong></span>
-            <span>⏱ Avg Latency: <strong style={{ color: 'var(--warm-yellow)' }}>{health.avgLatency.toFixed(1)}ms</strong></span>
-            <span>🔗 Density: <strong style={{ color: 'var(--neon-orange)' }}>{(health.density * 100).toFixed(0)}%</strong></span>
-            <span>🟢 Active Packets: <strong style={{ color: 'var(--neon-cyan)' }}>{sim.activePackets.length}</strong></span>
+        {/* Node Inspector Card */}
+        <div className="panel glass-panel inspector-panel" style={{ flex: 1.3, padding: '16px', display: 'flex', flexDirection: 'column', minHeight: '520px', marginBottom: 0 }}>
+          <div className="section-header" style={{ marginBottom: 12 }}>Node Inspector</div>
+
+          {sel ? (
+            <div className="panel-scroll animate-slide-in">
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
+                  Delete Node
+                </button>
+                <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => sim.failNode(selectedNode)}>
+                  Fail Node
+                </button>
+              </div>
+              
+              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.95rem', color: 'var(--nash-chartreuse)', marginBottom: 8, fontWeight: 'bold' }}>
+                {dataSourceManager?.isHardware ? (sel.id === 'A' ? "Main Server" : `Sub-Server ${sel.id}`) : sel.label}
+              </h3>
+              
+              <span className={`badge ${sel.data.status === 'active' ? 'badge-green' : sel.data.status === 'warning' ? 'badge-yellow' : 'badge-red'}`} style={{ marginBottom: 12 }}>
+                {sel.data.status.toUpperCase()}
+              </span>
+
+              {/* Node-specific sensor values popup card */}
+              <div className="glass-panel" style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', marginBottom: 12 }}>
+                <div style={{ fontFamily: 'var(--font-display)', color: 'var(--nash-chartreuse)', fontSize: '0.72rem', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+                  {sel.id === 'A' ? 'Main Server Metrics' : `Sub-Server ${sel.id} Sensors`}
+                </div>
+                <table className="data-table">
+                  <tbody>
+                    <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
+                    <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
+                    <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 210 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="section-header" style={{ marginTop: 12, fontSize: '0.7rem', paddingBottom: 4 }}>Detailed Info</div>
+              <table className="data-table" style={{ marginBottom: 12 }}>
+                <tbody>
+                  {sel.id !== 'A' && <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>}
+                  <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
+                  <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
+                </tbody>
+              </table>
+
+              {/* Edge Weight Editor */}
+              <div className="section-header" style={{ marginTop: 12, fontSize: '0.7rem', paddingBottom: 4 }}>Link Weights</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {graph.edges.filter(e => e.source === sel.id || e.target === sel.id).length > 0 ? (
+                  graph.edges.filter(e => e.source === sel.id || e.target === sel.id).map(edge => {
+                    const peerId = edge.source === sel.id ? edge.target : edge.source;
+                    const peerLabel = dataSourceManager?.isHardware ? `Sub-Server ${peerId}` : (graph.nodes.get(peerId)?.label || peerId);
+                    return (
+                      <div key={`${edge.source}-${edge.target}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                        <span style={{ color: 'var(--text-secondary)' }}>Link to {peerLabel}:</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          defaultValue={edge.weight}
+                          style={{
+                            width: 50,
+                            background: 'rgba(0,0,0,0.6)',
+                            color: 'var(--nash-chartreuse)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 4,
+                            padding: '2px 4px',
+                            textAlign: 'center'
+                          }}
+                          onBlur={(e) => {
+                            const newWeight = Number(e.target.value);
+                            if (isNaN(newWeight) || newWeight < 1) return;
+                            edge.weight = newWeight;
+                            setTick(t => t + 1);
+                          }}
+                        />
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>No connections</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="panel-scroll animate-fade-in" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ textTransform: 'uppercase', fontSize: '0.72rem', color: 'var(--text-muted)', letterSpacing: '1.5px', fontWeight: 'bold' }}>
+                System Diagnostics
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div className="glass-panel" style={{ padding: '12px', textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)' }}>
+                  <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', letterSpacing: '0.5px' }}>MESH SIGNAL HEALTH</div>
+                  <div style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--nash-chartreuse)', marginTop: '4px' }}>OPTIMAL</div>
+                </div>
+                <div className="glass-panel" style={{ padding: '12px', textAlign: 'center', background: 'rgba(255, 255, 255, 0.02)' }}>
+                  <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', letterSpacing: '0.5px' }}>NETWORK TOPOLOGY</div>
+                  <div style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--neon-cyan)', marginTop: '4px' }}>CONVERGED</div>
+                </div>
+              </div>
+              
+              <div className="glass-panel" style={{ padding: '14px', background: 'var(--bg-secondary)' }}>
+                <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#ffffff', marginBottom: '10px', letterSpacing: '0.5px' }}>LIVE MESH ADJACENCY (TOP 4 LINKS)</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {graph.edges.slice(0, 4).map((edge, idx) => (
+                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', fontFamily: 'var(--font-mono)' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        Link {graph.nodes.get(edge.source)?.label} ↔ {graph.nodes.get(edge.target)?.label}
+                      </span>
+                      <span style={{ color: 'var(--warm-yellow)', fontWeight: 'bold' }}>
+                        Cost: {edge.weight}ms
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border-subtle)', paddingTop: '14px', textAlign: 'center' }}>
+                <p style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  Select any active node on the topology map to inspect details, modify connection weights, or simulate system failures.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Live Events Stream Card */}
+        <div className="panel glass-panel events-panel" style={{ flex: 0.7, padding: '16px', display: 'flex', flexDirection: 'column', minHeight: '220px', marginBottom: 0 }}>
+          <div className="section-header" style={{ marginBottom: 8 }}>Live Event Stream</div>
+          <div className="panel-scroll" style={{ flex: 1 }}>
+            {events.map(ev => (
+              <div key={ev.id} className={`event-item ${ev.type}`} style={{ fontSize: '0.72rem', padding: '4px 8px' }}>
+                <span style={{ opacity: 0.45, marginRight: 6, fontSize: '0.62rem' }}>{ev.timestamp.toLocaleTimeString()}</span>
+                {ev.message}
+              </div>
+            ))}
           </div>
         </div>
+
       </div>
     </div>
   );

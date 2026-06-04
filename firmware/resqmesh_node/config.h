@@ -29,6 +29,10 @@
 #define GAS_PIN       34    // MQ-2 analog output
 #define BATTERY_PIN   35    // Voltage divider to LiPo
 
+// ── LED pins ──────────────────────────────────────────────────────────────────
+#define LED_GREEN_PIN 18
+#define LED_RED_PIN   19
+
 // ── Timing (milliseconds) ────────────────────────────────────────────────────
 #define HELLO_INTERVAL_MS       5000   // Broadcast HELLO every 5 s
 #define NEIGHBOR_TIMEOUT_MS    15000   // Remove neighbor if silent for 15 s
