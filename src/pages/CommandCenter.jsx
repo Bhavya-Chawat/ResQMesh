@@ -307,14 +307,7 @@ export default function CommandCenter() {
             ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 8, y + 4);
         }
 
-        // Battery micro-bar (drawn elegantly below node)
-        const bw = 24, bh = 4;
-        const bx = x - bw / 2, by = y + r + 10;
-        ctx.fillStyle = isLight ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)';
-        ctx.fillRect(bx, by, bw, bh);
-        const pct = node.data.battery / 100;
-        ctx.fillStyle = pct < 0.15 ? (isLight ? '#ff8a80' : '#FF1744') : pct < 0.3 ? '#FFC85C' : (isLight ? '#ffffff' : '#c9ff00');
-        ctx.fillRect(bx, by, bw * pct, bh);
+
       }
 
       animRef.current = requestAnimationFrame(draw);
@@ -500,7 +493,7 @@ export default function CommandCenter() {
               left: '12px',
               right: '12px',
               display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
+              gridTemplateColumns: 'repeat(4, 1fr)',
               gap: '8px',
               zIndex: 5
             }}>
@@ -519,10 +512,6 @@ export default function CommandCenter() {
               <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
                 <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Grid Density</div>
                 <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#ffffff' }}>{(health.density * 100).toFixed(0)}%</div>
-              </div>
-              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
-                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Avg Battery</div>
-                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: health.avgBattery < 30 ? 'var(--neon-red)' : 'var(--nash-chartreuse)' }}>{health.avgBattery.toFixed(0)}%</div>
               </div>
             </div>
             
@@ -641,7 +630,7 @@ export default function CommandCenter() {
               <div className="section-header" style={{ marginTop: 12, fontSize: '0.7rem', paddingBottom: 4 }}>Detailed Info</div>
               <table className="data-table" style={{ marginBottom: 12 }}>
                 <tbody>
-                  {sel.id !== 'A' && <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>}
+
                   <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
                   <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
                 </tbody>

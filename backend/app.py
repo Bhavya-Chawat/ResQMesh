@@ -20,28 +20,40 @@ WebSocket events emitted to frontend:
   stats_update      – aggregate network health metrics
 """
 
-import _thread
-native_get_ident = _thread.get_ident
-
-import eventlet
-eventlet.monkey_patch()
-
-# Patch get_ident to handle interpreter shutdown/finalization gracefully
+import sys
 import threading
-original_get_ident = threading.get_ident
+import time
 
-def safe_get_ident(*args, **kwargs):
-    try:
-        return original_get_ident(*args, **kwargs)
-    except RuntimeError as e:
-        if "greenlet is being finalized" in str(e):
-            return native_get_ident()
-        raise
+USE_EVENTLET = False
+eventlet = None
 
-threading.get_ident = safe_get_ident
 try:
-    import eventlet.green.thread as eventlet_thread
-    eventlet_thread.get_ident = safe_get_ident
+    if sys.version_info < (3, 13):
+        import _thread
+        native_get_ident = _thread.get_ident
+
+        import eventlet as ev
+        eventlet = ev
+        eventlet.monkey_patch()
+
+        # Patch get_ident to handle interpreter shutdown/finalization gracefully
+        original_get_ident = threading.get_ident
+
+        def safe_get_ident(*args, **kwargs):
+            try:
+                return original_get_ident(*args, **kwargs)
+            except RuntimeError as e:
+                if "greenlet is being finalized" in str(e):
+                    return native_get_ident()
+                raise
+
+        threading.get_ident = safe_get_ident
+        try:
+            import eventlet.green.thread as eventlet_thread
+            eventlet_thread.get_ident = safe_get_ident
+        except Exception:
+            pass
+        USE_EVENTLET = True
 except Exception:
     pass
 
@@ -94,7 +106,7 @@ log = logging.getLogger("resqmesh")
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "resqmesh-secret-key"
 CORS(app, resources={r"/api/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet" if USE_EVENTLET else "threading")
 
 # ──────────────────────────────────────────────
 # In-Memory Topology State
@@ -196,9 +208,9 @@ class NodeState:
         gas = self.data["gasLevel"]
         # Only fail if gas is high (smoke) or temp is realistic but high (60 - 200)
         # Ignore 0.0 battery and 691.9 disconnected temp
-        if (60.0 < t < 200.0) or gas > 210:
+        if (60.0 < t < 200.0) or gas > 500:
             self.data["status"] = "failed"
-        elif (45.0 < t < 200.0) or gas > 160:
+        elif (45.0 < t < 200.0) or gas > 450:
             self.data["status"] = "warning"
         else:
             self.data["status"] = "active"
@@ -411,7 +423,10 @@ topology = TopologyManager()
 
 def failure_watcher():
     while True:
-        eventlet.sleep(NODE_FAILURE_CHECK_INTERVAL)
+        if USE_EVENTLET and eventlet:
+            eventlet.sleep(NODE_FAILURE_CHECK_INTERVAL)
+        else:
+            time.sleep(NODE_FAILURE_CHECK_INTERVAL)
         global PAUSE_UNTIL
         if time.time() < PAUSE_UNTIL:
             continue
@@ -717,8 +732,11 @@ if __name__ == "__main__":
     except Exception as exc:
         log.error("MQTT connect failed: %s — running without MQTT", exc)
 
-    # Start heartbeat failure watcher in eventlet green thread
-    eventlet.spawn(failure_watcher)
+    # Start heartbeat failure watcher
+    if USE_EVENTLET and eventlet:
+        eventlet.spawn(failure_watcher)
+    else:
+        threading.Thread(target=failure_watcher, daemon=True).start()
 
     socketio.run(
         app,
@@ -726,4 +744,5 @@ if __name__ == "__main__":
         port=FLASK_PORT,
         debug=FLASK_DEBUG,
         use_reloader=False,
+        allow_unsafe_werkzeug=True,
     )

@@ -403,6 +403,7 @@ void setup() {
   Serial.print("[WiFi] Connecting");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.printf("\n[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[WiFi] Channel: %d\n", WiFi.channel());
   Serial.printf("[WiFi] MAC: %s  (share this with mesh nodes)\n",
                 WiFi.macAddress().c_str());
 

@@ -73,6 +73,7 @@ class DataSourceManager {
     this._graph  = graph;
     this._sim    = sim;
     this._notify = notifyFn;
+    window.dataSourceManager = this;
 
     if (this._mode === 'hardware') {
       this._startHardwareMode();
@@ -219,10 +220,10 @@ class DataSourceManager {
     this._pendingNodeStatuses.clear();
     this._pendingNodeFailures.clear();
 
-    // Start 5-second graph visual refresh timer
+    // Start 2-second graph visual refresh timer (reduced from 5s for responsiveness)
     this._topologyInterval = setInterval(() => {
       this._flushTopologyUpdates();
-    }, 5000);
+    }, 2000);
 
     this._connectionStatus = 'connecting';
     websocketService.connect();
@@ -252,61 +253,71 @@ class DataSourceManager {
       }),
 
       websocketService.on('topology_update', (data) => {
-        if (sim && !sim.isRunning) return;
-        // Buffer visual topology structure
-        this._pendingTopologySnapshot = data;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
 
-        // But immediately update sensor readings for existing nodes in real-time
         if (data && data.nodes) {
           for (const backendNode of data.nodes) {
             const nodeId = String(backendNode.id);
             const existing = graph.nodes.get(nodeId);
-            if (existing && backendNode.data) {
+
+            if (!existing) {
+              // ── NEW NODE: add immediately so it appears without waiting for flush ──
+              applyTopologySnapshot(graph, { nodes: [backendNode], edges: [] }, sim);
+            } else if (backendNode.data) {
+              // ── EXISTING NODE: update sensor readings in real-time ──
               const src = backendNode.data;
               if (src.temperature !== undefined) existing.data.temperature = Number(src.temperature);
               if (src.humidity !== undefined) existing.data.humidity = Number(src.humidity);
               if (src.gasLevel !== undefined) existing.data.gasLevel = Number(src.gasLevel);
               if (src.battery !== undefined) existing.data.battery = Number(src.battery);
+              if (src.rssi !== undefined) existing.data.rssi = Number(src.rssi);
+              if (src.battery !== undefined) existing.data.battery = Number(src.battery);
             }
           }
         }
+
+        // Always apply edges from the full snapshot via buffer (avoids thrashing)
+        this._pendingTopologySnapshot = data;
         notify?.(); // Real-time notify for UI table/inspector
       }),
 
       websocketService.on('node_update', (event) => {
-        if (sim && !sim.isRunning) return;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
         
         const nodeId = String(event.nodeId);
         let existing = graph.nodes.get(nodeId);
 
-        // If the node exists, update its sensor data in real-time
+        if (!existing) {
+          // ── NEW NODE: add it immediately so it shows up on canvas right away ──
+          handleNodeUpdate(graph, event, sim);
+          existing = graph.nodes.get(nodeId);
+        }
+
+        // Update sensor data in real-time for the (now-existing) node
         if (existing && event.node?.data) {
           const src = event.node.data;
           if (src.temperature !== undefined) existing.data.temperature = Number(src.temperature);
           if (src.humidity !== undefined) existing.data.humidity = Number(src.humidity);
           if (src.gasLevel !== undefined) existing.data.gasLevel = Number(src.gasLevel);
           if (src.battery !== undefined) existing.data.battery = Number(src.battery);
+          if (src.rssi !== undefined) existing.data.rssi = Number(src.rssi);
           
-          // Buffer the visual status update
+          // Status also applied immediately (no buffering needed for single node update)
           if (src.status) {
-            this._pendingNodeStatuses.set(nodeId, src.status);
+            existing.data.status = src.status;
           }
-        } else {
-          // New node: initialize it immediately so it receives numeric updates,
-          // but its structural representation on the graph will update
-          handleNodeUpdate(graph, event, sim);
         }
         
         notify?.(); // Real-time notify for UI table/inspector
       }),
 
       websocketService.on('heartbeat', (event) => {
-        if (sim && !sim.isRunning) return;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
         notify?.();
       }),
 
       websocketService.on('node_failure', (event) => {
-        if (sim && !sim.isRunning) return;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
         if (event?.nodeId) {
           this._pendingNodeFailures.add(String(event.nodeId));
           sim?.eventLog?.add('critical', event.message || `NODE FAILURE: ${event.nodeId}`);
@@ -315,13 +326,13 @@ class DataSourceManager {
       }),
 
       websocketService.on('alert', (event) => {
-        if (sim && !sim.isRunning) return;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
         handleAlert(graph, event, sim);
         notify?.();
       }),
 
       websocketService.on('stats_update', (statsPayload) => {
-        if (sim && !sim.isRunning) return;
+        if (this._mode !== 'hardware') return; // ignore if mode switched away
         applyStatsUpdate(sim, statsPayload);
         notify?.();
       }),

@@ -6,14 +6,14 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Node identity ─────────────────────────────────────────────────────────────
-#define NODE_ID     "A"
-#define NODE_LABEL  "Node A"
-#define IS_GATEWAY  true   // Set to false for Node B
+#define NODE_ID     "C"
+#define NODE_LABEL  "Node C"
+#define IS_GATEWAY  false   // Set to false for Node C
 
 // ── WiFi / MQTT (gateway only — ignored on mesh nodes) ───────────────────────
 #define WIFI_SSID      "Madhur"
 #define WIFI_PASSWORD  "qwertyuiop"
-#define MQTT_BROKER    "172.20.10.8"
+#define MQTT_BROKER    "172.20.10.2"
 #define MQTT_PORT      1883
 #define MQTT_USER      ""
 #define MQTT_PASS      ""

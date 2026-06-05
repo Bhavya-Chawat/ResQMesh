@@ -91,6 +91,7 @@ logs/
 # MQTT logs
 
 mosquitto.log
+mosquitto.conf
 
 # =========================
 
