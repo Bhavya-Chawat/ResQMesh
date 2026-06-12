@@ -9,17 +9,26 @@ function nPos(node, w, h, pad = 55) {
 }
 
 export default function RescueMode() {
-  const { graph, sim } = useApp();
+  const { graph, sim, dataSourceManager, tick } = useApp();
+  const mapRef = useRef(null);
+  const mapDivRef = useRef(null);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const polylinesRef = useRef([]);
+  const weightLabelsRef = useRef([]);
+  const pathPolylineRef = useRef(null);
+  const vehicleMarkerRef = useRef(null);
+  const [radarLayer, setRadarLayer] = useState(null);
+
   const [selectedAlerts, setSelectedAlerts] = useState(new Set());
   const [rescueResult, setRescueResult] = useState(null);
   const [isComputing, setIsComputing] = useState(false);
   const [rescueStepIdx, setRescueStepIdx] = useState(-1);
   const resultsRef = useRef(null);
-  const [, setTick] = useState(0);
+  // Global tick handles updates for both simulation and hardware modes
 
-  // Refs so canvas loop always has fresh values
+  // Refs so callbacks/events always have fresh values
   const selectedAlertsRef = useRef(selectedAlerts);
   const rescueResultRef = useRef(rescueResult);
   const toggleAlertRef = useRef(null);
@@ -27,12 +36,34 @@ export default function RescueMode() {
   useEffect(() => { selectedAlertsRef.current = selectedAlerts; }, [selectedAlerts]);
   useEffect(() => { rescueResultRef.current = rescueResult; }, [rescueResult]);
 
-  useEffect(() => {
-    const unsub = sim.subscribe(() => setTick(t => t + 1));
-    return unsub;
-  }, [sim]);
+  // Global tick updates are handled at the context level
 
-  const nodeIds = Array.from(graph.nodes.keys());
+  const isNodeOnline = useCallback((n) => {
+    if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+      return n.data.status !== 'failed';
+    }
+    return true;
+  }, [dataSourceManager?.mode]);
+
+  const nodeIds = Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)));
+
+  // Clear selected alerts if nodes go offline in hardware mode
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+      setSelectedAlerts(prev => {
+        const next = new Set(prev);
+        let changed = false;
+        for (const id of next) {
+          const node = graph.nodes.get(id);
+          if (!node || node.data.status === 'failed') {
+            next.delete(id);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [graph, dataSourceManager?.mode, tick]);
 
   const toggleAlert = (id) => {
     setSelectedAlerts(prev => {
@@ -43,7 +74,6 @@ export default function RescueMode() {
     setRescueResult(null);
     setRescueStepIdx(-1);
   };
-  // Keep ref up to date so canvas click handler can call the latest version
   toggleAlertRef.current = toggleAlert;
 
   const computeRescue = useCallback(() => {
@@ -57,17 +87,354 @@ export default function RescueMode() {
       setRescueResult(result);
       setRescueStepIdx(result.steps.length - 1);
       setIsComputing(false);
-      sim.eventLog.add('success', `Rescue route computed! Cost: ${result.bestCost.toFixed(1)}ms`);
+      const unit = dataSourceManager?.mode === 'simulation' ? 'ms' : 'km';
+      sim.eventLog.add('success', `Rescue route computed! Cost: ${result.bestCost.toFixed(1)} ${unit}`);
       
       // Auto-scroll to results on mobile
       setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     }, 800);
-  }, [selectedAlerts, graph, sim]);
+  }, [selectedAlerts, graph, sim, dataSourceManager?.mode]);
 
-  // Canvas — runs ONCE on mount, reads state via refs
+  // Fetch RainViewer radar layer timestamp
   useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.radar && data.radar.past && data.radar.past.length > 0) {
+          const latest = data.radar.past[data.radar.past.length - 1].time;
+          setRadarLayer(`https://tilecache.rainviewer.com/v2/radar/${latest}/256/{z}/{x}/{y}/2/1_1.png`);
+        }
+      })
+      .catch(err => console.error("Error fetching radar timestamp:", err));
+  }, [dataSourceManager?.mode]);
+
+  // Initialize Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      return;
+    }
+    if (!mapDivRef.current || mapRef.current) return;
+
+    const L = window.L;
+    if (!L) return;
+
+    const map = L.map(mapDivRef.current, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([12.9716, 77.5946], 12); // Centered on Bangalore
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [dataSourceManager?.mode]);
+
+  // Sync radar layer
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L || !radarLayer) return;
+
+    const layer = L.tileLayer(radarLayer, {
+      opacity: 0.45,
+      zIndex: 10,
+      maxNativeZoom: 7
+    }).addTo(map);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [radarLayer, dataSourceManager?.mode]);
+
+  // Sync nodes and links on Leaflet Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    // 1. Remove old polylines and weight labels
+    for (const pl of polylinesRef.current) {
+      map.removeLayer(pl);
+    }
+    polylinesRef.current = [];
+
+    for (const lbl of weightLabelsRef.current) {
+      map.removeLayer(lbl);
+    }
+    weightLabelsRef.current = [];
+
+    if (pathPolylineRef.current) {
+      map.removeLayer(pathPolylineRef.current);
+      pathPolylineRef.current = null;
+    }
+
+    // 2. Render standard links
+    for (const edge of graph.edges) {
+      const src = graph.nodes.get(edge.source);
+      const tgt = graph.nodes.get(edge.target);
+      if (!src || !tgt) continue;
+      if (!isNodeOnline(src) || !isNodeOnline(tgt)) continue;
+
+      const isFailed = src.data.status === 'failed' || tgt.data.status === 'failed';
+      const color = isFailed ? '#ff1744' : 'rgba(11, 18, 32, 0.2)';
+      const polyline = L.polyline([[src.lat, src.lon], [tgt.lat, tgt.lon]], {
+        color: color,
+        weight: isFailed ? 1.5 : 2,
+        dashArray: isFailed ? '5, 5' : null,
+        opacity: isFailed ? 0.3 : 0.6
+      }).addTo(map);
+      polylinesRef.current.push(polyline);
+
+      if (!isFailed) {
+        const midLat = (src.lat + tgt.lat) / 2;
+        const midLon = (src.lon + tgt.lon) / 2;
+        const labelMarker = L.marker([midLat, midLon], {
+          icon: L.divIcon({
+            html: `<div style="font-family: var(--font-mono); font-size: 0.65rem; color: rgba(11,18,32,0.6); text-align: center; white-space: nowrap;">${edge.weight.toFixed(1)} km</div>`,
+            className: 'edge-weight-label',
+            iconSize: [40, 12],
+            iconAnchor: [20, 6]
+          }),
+          interactive: false
+        }).addTo(map);
+        weightLabelsRef.current.push(labelMarker);
+      }
+    }
+
+    // 3. Render active rescue path
+    if (rescueResult?.bestPath && rescueResult.bestPath.length > 1) {
+      const path = rescueResult.bestPath;
+      const pathCoords = [];
+      let pathValid = true;
+      for (const id of path) {
+        const n = graph.nodes.get(id);
+        if (!n || !isNodeOnline(n)) {
+          pathValid = false;
+          break;
+        }
+        pathCoords.push([n.lat, n.lon]);
+      }
+      if (pathValid) {
+        // Add start node to complete the cycle
+        const first = graph.nodes.get(path[0]);
+        if (first && isNodeOnline(first)) pathCoords.push([first.lat, first.lon]);
+
+        const activePolyline = L.polyline(pathCoords, {
+          color: '#FF653F',
+          weight: 4.5,
+          dashArray: '10, 6',
+          opacity: 0.9,
+          zIndexOffset: 100
+        }).addTo(map);
+        pathPolylineRef.current = activePolyline;
+      }
+    }
+
+    // 4. Render/Update nodes
+    const currentIds = new Set(
+      Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)))
+    );
+    for (const [id, marker] of markersRef.current.entries()) {
+      if (!currentIds.has(id)) {
+        map.removeLayer(marker);
+        markersRef.current.delete(id);
+      }
+    }
+
+    for (const [id, node] of graph.nodes.entries()) {
+      if (!isNodeOnline(node)) continue;
+      let marker = markersRef.current.get(id);
+      const isAlert = selectedAlerts.has(id);
+      const isFailed = node.data.status === 'failed';
+      const color = isFailed ? '#ff1744' : (isAlert ? '#FF1744' : '#448AFF');
+      const size = isAlert ? 16 : 12;
+
+      const pathIdx = rescueResult?.bestPath ? rescueResult.bestPath.indexOf(id) : -1;
+      const seqBadge = pathIdx !== -1 ? `<span style="color:#FF653F;font-weight:bold;margin-left:4px;">#${pathIdx + 1}</span>` : '';
+
+      const markerHtml = `
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+          <!-- Node Label -->
+          <div style="
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            font-weight: bold;
+            color: #ffffff;
+            background: rgba(0,0,0,0.65);
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            border: 1px solid ${isAlert ? '#FF1744' : 'rgba(255,255,255,0.1)'};
+          ">
+            ${node.label}${seqBadge}
+          </div>
+          <!-- Node Circle & Pulse -->
+          <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+            ${isAlert && !isFailed ? '<div class="sonar-pulse-ring"></div>' : ''}
+            <div style="
+              width: ${size}px;
+              height: ${size}px;
+              background-color: ${color};
+              border-radius: 50%;
+              border: 2px solid #ffffff;
+              box-shadow: 0 0 10px ${color};
+            "></div>
+          </div>
+          ${isAlert && !isFailed ? `
+            <div style="
+              font-family: var(--font-mono);
+              font-size: 0.55rem;
+              color: #FF1744;
+              font-weight: bold;
+              text-shadow: 0 0 4px rgba(0,0,0,0.8);
+              margin-top: 2px;
+              white-space: nowrap;
+            ">
+              DISASTER AREA
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      const markerOptions = {
+        icon: L.divIcon({
+          html: markerHtml,
+          className: 'rescue-node-icon',
+          iconSize: [80, 80],
+          iconAnchor: [40, 50]
+        }),
+        zIndexOffset: isAlert ? 500 : 0
+      };
+
+      if (!marker) {
+        marker = L.marker([node.lat, node.lon], markerOptions).addTo(map);
+        marker.on('click', () => {
+          toggleAlertRef.current(id);
+        });
+        markersRef.current.set(id, marker);
+      } else {
+        marker.setLatLng([node.lat, node.lon]);
+        marker.setIcon(markerOptions.icon);
+        if (!map.hasLayer(marker)) {
+          marker.addTo(map);
+        }
+      }
+    }
+  }, [graph, selectedAlerts, rescueResult, dataSourceManager?.mode, tick]);
+
+  // Handle moving rescue vehicle animation
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    if (vehicleMarkerRef.current) {
+      map.removeLayer(vehicleMarkerRef.current);
+      vehicleMarkerRef.current = null;
+    }
+
+    if (!rescueResult?.bestPath || rescueResult.bestPath.length < 2) return;
+
+    const path = rescueResult.bestPath;
+    const firstNode = graph.nodes.get(path[0]);
+    if (!firstNode || !isNodeOnline(firstNode)) return;
+
+    const vehicleHtml = `
+      <div style="
+        width: 32px; height: 32px;
+        background: rgba(255, 101, 63, 0.2);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 0 20px rgba(255, 101, 63, 0.4);
+      ">
+        <div style="
+          width: 18px; height: 18px;
+          background: #FF653F;
+          border: 2px solid #ffffff;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #ffffff;
+          font-family: var(--font-mono);
+          font-weight: bold;
+          font-size: 9px;
+        ">R</div>
+      </div>
+    `;
+
+    const vehicleIcon = L.divIcon({
+      html: vehicleHtml,
+      className: 'rescue-vehicle-icon',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16]
+    });
+
+    const vehicleMarker = L.marker([firstNode.lat, firstNode.lon], {
+      icon: vehicleIcon,
+      zIndexOffset: 1000
+    }).addTo(map);
+
+    vehicleMarkerRef.current = vehicleMarker;
+
+    let animId;
+    let startTime = performance.now();
+
+    function animate() {
+      const time = (performance.now() - startTime) / 1000;
+      const vehicleProgress = (time * 0.12) % 1;
+      const totalSegs = path.length;
+      const segFloat = vehicleProgress * totalSegs;
+      const seg = Math.floor(segFloat) % totalSegs;
+      const segT = segFloat - Math.floor(segFloat);
+
+      const sn = graph.nodes.get(path[seg]);
+      const en = graph.nodes.get(path[(seg + 1) % path.length]);
+
+      if (sn && en && isNodeOnline(sn) && isNodeOnline(en)) {
+        const vLat = sn.lat + (en.lat - sn.lat) * segT;
+        const vLon = sn.lon + (en.lon - sn.lon) * segT;
+        vehicleMarker.setLatLng([vLat, vLon]);
+      }
+
+      animId = requestAnimationFrame(animate);
+    }
+
+    animate();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      if (vehicleMarkerRef.current) {
+        map.removeLayer(vehicleMarkerRef.current);
+        vehicleMarkerRef.current = null;
+      }
+    };
+  }, [rescueResult, graph, dataSourceManager?.mode]);
+
+  // Canvas rendering effect for Simulation Mode
+  useEffect(() => {
+    if (dataSourceManager?.mode !== 'simulation') return;
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
@@ -86,14 +453,13 @@ export default function RescueMode() {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      const w = canvas.width, h = canvas.height, PAD = 65;
+      const w = canvas.width, h = canvas.height, PAD = 55;
 
       for (const [id, node] of graph.nodes) {
         const { x, y } = nPos(node, w, h, PAD);
         const dx = mx - x, dy = my - y;
-        if (dx * dx + dy * dy < 900) {
-          // Call the latest toggleAlert via ref
-          toggleAlertRef.current(id);
+        if (dx * dx + dy * dy < 400) { // 20px radius
+          toggleAlert(id);
           return;
         }
       }
@@ -107,99 +473,43 @@ export default function RescueMode() {
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
-      // Read fresh state from refs
-      const curAlerts = selectedAlertsRef.current;
-      const curResult = rescueResultRef.current;
 
-      // ── Tactical rescue grid ──
-      const GRID = 65;
-      // Vertical lines (red-tinted)
-      ctx.strokeStyle = 'rgba(255,23,68,0.15)';
-      ctx.lineWidth = 0.8;
-      for (let gx = 0; gx < w; gx += GRID) {
-        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
-      }
-      // Horizontal lines (orange tint)
-      ctx.strokeStyle = 'rgba(255,101,63,0.12)';
-      for (let gy = 0; gy < h; gy += GRID) {
-        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
-      }
-      // Grid intersection markers
-      ctx.fillStyle = 'rgba(255,23,68,0.28)';
-      for (let gx = 0; gx < w; gx += GRID) {
-        for (let gy = 0; gy < h; gy += GRID) {
-          ctx.beginPath(); ctx.arc(gx, gy, 1.5, 0, Math.PI * 2); ctx.fill();
-        }
-      }
-      // Corner bracket accents (red)
-      const bS = 24;
-      ctx.strokeStyle = 'rgba(255,23,68,0.55)';
-      ctx.lineWidth = 1.5;
-      [[0,0,1,1],[w,0,-1,1],[0,h,1,-1],[w,h,-1,-1]].forEach(([bx,by,sx,sy]) => {
-        ctx.beginPath();
-        ctx.moveTo(bx + sx*bS, by); ctx.lineTo(bx, by); ctx.lineTo(bx, by + sy*bS);
-        ctx.stroke();
-      });
-      // Center crosshair
-      ctx.strokeStyle = 'rgba(255,23,68,0.12)';
-      ctx.lineWidth = 0.6;
-      ctx.setLineDash([4, 8]);
-      ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
-      ctx.setLineDash([]);
+      // Grid
+      ctx.strokeStyle = 'rgba(255,23,68,0.03)';
+      for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
-      // Tactical coordinates overlays on canvas edges
-      ctx.strokeStyle = 'rgba(255, 23, 68, 0.06)';
-      ctx.lineWidth = 1;
-      ctx.font = '7.5px "Geist Mono", monospace';
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
-      for (let offset = 50; offset < w; offset += 100) {
-        ctx.beginPath();
-        ctx.moveTo(offset, 0); ctx.lineTo(offset, 6);
-        ctx.moveTo(offset, h); ctx.lineTo(offset, h - 6);
-        ctx.stroke();
-        ctx.fillText(`LNG ${(120.984 + offset / 1200).toFixed(4)}`, offset - 20, 14);
-      }
-      for (let offset = 50; offset < h; offset += 100) {
-        ctx.beginPath();
-        ctx.moveTo(0, offset); ctx.lineTo(6, offset);
-        ctx.moveTo(w, offset); ctx.lineTo(w - 6, offset);
-        ctx.stroke();
-        ctx.fillText(`LAT ${(14.599 + offset / 1200).toFixed(4)}`, 9, offset + 3);
-      }
-
-      const PAD = 65;
-      
-      // Draw standard links
+      const PAD = 55;
+      // Edges
       for (const edge of graph.edges) {
         const src = graph.nodes.get(edge.source);
         const tgt = graph.nodes.get(edge.target);
         if (!src || !tgt) continue;
         const sp = nPos(src, w, h, PAD);
         const tp = nPos(tgt, w, h, PAD);
-        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255,200,92,0.12)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(sp.x, sp.y);
         ctx.lineTo(tp.x, tp.y);
         ctx.stroke();
 
-        ctx.font = 'bold 10px "Geist Mono", monospace';
-        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '9px "Share Tech Mono"';
+        ctx.fillStyle = 'rgba(255,200,92,0.3)';
         ctx.textAlign = 'center';
-        ctx.fillText(`${edge.weight.toFixed(0)}m`, (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 4);
+        ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 4);
       }
 
-      // Draw active rescue path
-      if (curResult?.bestPath && curResult.bestPath.length > 1) {
-        const path = curResult.bestPath;
-        const dashOffset = time * 35;
-        ctx.setLineDash([10, 6]);
+      // Rescue path
+      if (rescueResult?.bestPath && rescueResult.bestPath.length > 1) {
+        const path = rescueResult.bestPath;
+        const dashOffset = time * 30;
+        ctx.setLineDash([8, 6]);
         ctx.lineDashOffset = -dashOffset;
         ctx.strokeStyle = '#FF653F';
-        ctx.lineWidth = 4.5;
+        ctx.lineWidth = 3;
         ctx.shadowColor = '#FF653F';
-        ctx.shadowBlur = 16;
+        ctx.shadowBlur = 12;
         ctx.beginPath();
         for (let i = 0; i < path.length; i++) {
           const n = graph.nodes.get(path[i]);
@@ -215,7 +525,7 @@ export default function RescueMode() {
 
         // Animated rescue vehicle
         const totalSegs = path.length;
-        const vehicleProgress = (time * 0.12) % 1;
+        const vehicleProgress = (time * 0.15) % 1;
         const segFloat = vehicleProgress * totalSegs;
         const seg = Math.floor(segFloat) % totalSegs;
         const segT = segFloat - Math.floor(segFloat);
@@ -226,68 +536,67 @@ export default function RescueMode() {
           const ep2 = nPos(en, w, h, PAD);
           const vx = sp2.x + (ep2.x - sp2.x) * segT;
           const vy = sp2.y + (ep2.y - sp2.y) * segT;
-          const vGrad = ctx.createRadialGradient(vx, vy, 0, vx, vy, 25);
+          const vGrad = ctx.createRadialGradient(vx, vy, 0, vx, vy, 22);
           vGrad.addColorStop(0, 'rgba(255,101,63,0.5)');
           vGrad.addColorStop(1, 'transparent');
           ctx.fillStyle = vGrad;
-          ctx.beginPath(); ctx.arc(vx, vy, 25, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(vx, vy, 22, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = '#FF653F'; ctx.shadowColor = '#FF653F'; ctx.shadowBlur = 16;
-          ctx.beginPath(); ctx.arc(vx, vy, 9, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(vx, vy, 7, 0, Math.PI * 2); ctx.fill();
           ctx.shadowBlur = 0;
-          ctx.font = 'bold 11px "Geist Mono", monospace';
-          ctx.fillStyle = '#ffffff';
+          ctx.font = '14px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('R', vx, vy + 4);
+          ctx.fillText('V', vx, vy - 14);
         }
 
-        // Draw node indices along the path
         for (let i = 0; i < path.length; i++) {
           const n = graph.nodes.get(path[i]);
           if (!n) continue;
           const p = nPos(n, w, h, PAD);
-          ctx.font = 'bold 11px "Geist Mono", monospace';
+          ctx.font = 'bold 12px "Orbitron"';
           ctx.fillStyle = '#FF653F';
           ctx.textAlign = 'center';
-          ctx.fillText(`#${i + 1}`, p.x + 16, p.y - 16);
+          ctx.fillText(`#${i + 1}`, p.x + 20, p.y - 20);
         }
       }
 
-      // Draw Nodes — using refs for fresh alert state
+      // Nodes
       for (const [id, node] of graph.nodes) {
-        const isAlert = curAlerts.has(id);
+        const isAlert = selectedAlerts.has(id);
         const { x, y } = nPos(node, w, h, PAD);
         node.x = x; node.y = y;
-        
+        const r = isAlert ? 14 : 10;
         const color = isAlert ? '#FF1744' : '#448AFF';
 
-        // Pulse sonar rings around active alert nodes
         if (isAlert) {
-          const pulseR = 18 + (time * 16) % 24;
-          const pulseOpacity = 1 - ((time * 16) % 24) / 24;
-          ctx.strokeStyle = `rgba(255, 23, 68, ${pulseOpacity})`;
-          ctx.lineWidth = 1.5;
+          const pulseR = 28 + Math.sin(time * 4) * 8;
+          ctx.strokeStyle = `rgba(255,23,68,${0.3 + Math.sin(time * 4) * 0.2})`;
+          ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(x, y, pulseR, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        const r = isAlert ? 18 : 12;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, r * 2.5);
+        grad.addColorStop(0, color + '40');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(x, y, r * 2.5, 0, Math.PI * 2); ctx.fill();
 
         ctx.fillStyle = color;
         ctx.shadowColor = color;
-        ctx.shadowBlur = isAlert ? 18 : 6;
+        ctx.shadowBlur = isAlert ? 18 : 7;
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
         ctx.shadowBlur = 0;
 
-        ctx.font = 'bold 11px "Geist Mono", monospace';
-        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = 'bold 10px "Orbitron", monospace';
+        ctx.fillStyle = '#f0eaf8';
         ctx.textAlign = 'center';
         ctx.fillText(node.label, x, y - r - 8);
 
         if (isAlert) {
-          ctx.font = 'bold 9px "Geist Mono", monospace';
-          ctx.fillStyle = '#FF1744';
-          ctx.fillText('DISASTER AREA', x, y + r + 12);
+          ctx.font = '14px sans-serif';
+          ctx.fillText('ALERT', x, y + r + 18);
         }
       }
 
@@ -299,8 +608,7 @@ export default function RescueMode() {
       ro.disconnect(); 
       canvas.removeEventListener('mousedown', handleCanvasClick);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph]); // Run once — state accessed via refs
+  }, [graph, selectedAlerts, rescueResult, dataSourceManager?.mode]);
 
   return (
     <div className="page-container animate-fade-in" style={{ padding: '24px 40px', width: '100%', boxSizing: 'border-box' }}>
@@ -340,7 +648,7 @@ export default function RescueMode() {
                   boxShadow: isAlert ? '0 0 10px rgba(255,23,68,0.3)' : 'none'
                 }}
               >
-                {isAlert ? '🚨 NODE ' : 'NODE '}{graph.nodes.get(id)?.label}
+                {isAlert ? '🚨 ' : ''}{graph.nodes.get(id)?.label}
               </button>
             );
           })}
@@ -353,7 +661,7 @@ export default function RescueMode() {
       </div>
 
       <div className="rescue-layout" style={{ gridTemplateColumns: '1.2fr 1fr', gap: '24px' }}>
-        {/* Map Canvas - Enlarge map to be primary hero */}
+        {/* Map Container */}
         <div className="panel glass-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: '700px', padding: '20px', marginBottom: 0 }}>
           <div className="section-header" style={{ margin: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>Tactical Response Live Map</span>
@@ -361,8 +669,12 @@ export default function RescueMode() {
               ● DISASTER MODE ACTIVE
             </span>
           </div>
-          <div ref={containerRef} style={{ flex: 1, position: 'relative', marginTop: 12, background: 'rgba(5, 2, 15, 0.45)', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
-            <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+          <div ref={containerRef} style={{ flex: 1, position: 'relative', marginTop: 12, background: 'rgba(5, 2, 15, 0.45)', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.03)', overflow: 'hidden' }}>
+            {dataSourceManager?.mode === 'simulation' ? (
+              <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block', background: '#05020f' }} />
+            ) : (
+              <div ref={mapDivRef} style={{ width: '100%', height: '100%', minHeight: '600px', background: '#05020f' }} />
+            )}
           </div>
         </div>
 
@@ -378,13 +690,23 @@ export default function RescueMode() {
                 <div className="stat-card glass-panel" style={{ padding: '16px', borderLeft: '4px solid var(--nash-chartreuse)' }}>
                   <div className="stat-label" style={{ fontSize: '0.75rem' }}>Optimal Route Cost</div>
                   <div className="stat-value green" style={{ fontSize: '2.4rem', fontWeight: '900' }}>
-                    {rescueResult.bestCost.toFixed(1)}<span style={{ fontSize: '1rem', fontWeight: '500' }}> ms</span>
+                    {rescueResult.bestCost.toFixed(1)}
+                    <span style={{ fontSize: '1rem', fontWeight: '500' }}>
+                      {dataSourceManager?.mode === 'simulation' ? ' ms' : ' km'}
+                    </span>
                   </div>
                 </div>
                 <div className="stat-card glass-panel" style={{ padding: '16px', borderLeft: '4px solid var(--neon-cyan)' }}>
-                  <div className="stat-label" style={{ fontSize: '0.75rem' }}>Est. Mission Time</div>
+                  <div className="stat-label" style={{ fontSize: '0.75rem' }}>
+                    {dataSourceManager?.mode === 'simulation' ? 'Est. Mission Time' : 'Est. Travel Time (14 km/h avg, Bangalore)'}
+                  </div>
                   <div className="stat-value cyan" style={{ fontSize: '2.4rem', fontWeight: '900' }}>
-                    {(rescueResult.bestCost * 2.5).toFixed(0)}<span style={{ fontSize: '1rem', fontWeight: '500' }}> s</span>
+                    {dataSourceManager?.mode === 'simulation'
+                      ? (rescueResult.bestCost * 2.5).toFixed(0)
+                      : (rescueResult.bestCost / 14 * 60).toFixed(0)}
+                    <span style={{ fontSize: '1rem', fontWeight: '500' }}>
+                      {dataSourceManager?.mode === 'simulation' ? ' s' : ' mins'}
+                    </span>
                   </div>
                 </div>
               </div>

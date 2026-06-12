@@ -56,6 +56,9 @@ String topicFor(const char* msgType) {
 }
 
 void mqttReconnect() {
+  // Turn on Red LED to indicate connection loss
+  digitalWrite(LED_RED_PIN, HIGH);
+
   while (!mqttClient.connected()) {
     Serial.print("[MQTT] Connecting...");
     String cid = String("resqmesh-") + NODE_ID + "-" + random(0xffff);
@@ -64,6 +67,8 @@ void mqttReconnect() {
       : mqttClient.connect(cid.c_str());
     if (ok) {
       Serial.println("connected");
+      // Turn off Red LED once connected
+      digitalWrite(LED_RED_PIN, LOW);
     } else {
       Serial.printf("failed (rc=%d) — retry in 3 s\n", mqttClient.state());
       delay(3000);
@@ -196,22 +201,28 @@ void sendToGateway(MeshFrame& f) {
 
 // ── Sensor ────────────────────────────────────────────────────────────────────
 void publishSensor() {
+#if IS_GATEWAY
+  // Gateway does not have sensors connected; skip publishing its own sensor telemetry
+  return;
+#endif
+
   float temp = dht.readTemperature();
   float hum  = dht.readHumidity();
   float gas  = readGasLevel();
   float bat  = readBatteryPercent();
 
-  // Control green and red LEDs based on sensor thresholds (Temp > 45°C or Gas > 160 ppm)
+  // Control red LED based on sensor thresholds (unusual: Temp > 45°C or Gas > 160 ppm)
+  // or if the node is disconnected from the gateway (no route to "GW")
   bool unusual = false;
   if (!isnan(temp) && (temp > 45.0f || gas > 160.0f)) {
     unusual = true;
   }
 
-  if (unusual) {
-    digitalWrite(LED_GREEN_PIN, LOW);
+  bool disconnected = (routing.lookup("GW") == nullptr);
+
+  if (unusual || disconnected) {
     digitalWrite(LED_RED_PIN, HIGH);
   } else {
-    digitalWrite(LED_GREEN_PIN, HIGH);
     digitalWrite(LED_RED_PIN, LOW);
   }
 
@@ -338,12 +349,10 @@ void setup() {
   delay(200);
   dht.begin();
 
-  // Initialize LED pins
-  pinMode(LED_GREEN_PIN, OUTPUT);
+  // Initialize LED pin
   pinMode(LED_RED_PIN, OUTPUT);
-  // Default to normal operation state (Green ON, Red OFF)
-  digitalWrite(LED_GREEN_PIN, HIGH);
-  digitalWrite(LED_RED_PIN, LOW);
+  // Default to ON (indicates searching/not connected yet)
+  digitalWrite(LED_RED_PIN, HIGH);
 
 #if IS_GATEWAY
   // ── Gateway: WiFi station + AP (AP keeps a fixed channel for ESP-NOW) ──

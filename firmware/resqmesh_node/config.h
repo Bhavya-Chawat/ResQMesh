@@ -30,7 +30,6 @@
 #define BATTERY_PIN   35    // Voltage divider to LiPo
 
 // ── LED pins ──────────────────────────────────────────────────────────────────
-#define LED_GREEN_PIN 18
 #define LED_RED_PIN   19
 
 // ── Timing (milliseconds) ────────────────────────────────────────────────────

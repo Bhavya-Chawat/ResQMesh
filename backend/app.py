@@ -59,6 +59,100 @@ FLASK_DEBUG = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 HEARTBEAT_TIMEOUT         = float(os.getenv("HEARTBEAT_TIMEOUT", 6))
 NODE_FAILURE_CHECK_INTERVAL = float(os.getenv("NODE_FAILURE_CHECK_INTERVAL", 2))
 PAUSE_UNTIL = 0.0
+current_mode = "simulation"
+
+def get_haversine_distance(lat1, lon1, lat2, lon2):
+    import math
+    R = 6371.0  # Radius of the Earth in km
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) ** 2 +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(d_lon / 2) ** 2)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+# Bangalore GPS coordinates mapped to Node IDs A-E
+BANGALORE_COORDS = {
+    "A": {"lat": 13.0359, "lon": 77.5978, "label": "Hebbal Flyover (Bridge)"},
+    "B": {"lat": 12.9176, "lon": 77.6244, "label": "Silk Board Junction (Underpass)"},
+    "C": {"lat": 12.9784, "lon": 77.5695, "label": "Majestic Transit Hub"},
+    "D": {"lat": 12.9840, "lon": 77.7511, "label": "Whitefield IT Corridor"},
+    "E": {"lat": 13.0284, "lon": 77.5198, "label": "Peenya Industrial Area"}
+}
+
+# Thread-safe API caching
+api_cache = {}
+api_cache_lock = threading.Lock()
+CACHE_TTL = 30.0  # seconds
+
+def fetch_live_node_data(node_id: str) -> dict:
+    import urllib.request
+    now = time.time()
+    with api_cache_lock:
+        if node_id in api_cache:
+            cached = api_cache[node_id]
+            if now - cached["timestamp"] < CACHE_TTL:
+                return cached["data"]
+
+    coords = BANGALORE_COORDS.get(node_id)
+    if not coords:
+        return None
+
+    lat = coords["lat"]
+    lon = coords["lon"]
+    
+    # Defaults
+    data = {
+        "temperature": 25.0,
+        "humidity": 50.0,
+        "gasLevel": 100.0,
+        "wind_speed": 0.0,
+        "rain": 0.0,
+        "pm2_5": 0.0,
+        "co": 0.0,
+    }
+
+    try:
+        # 1. Fetch general weather data
+        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,precipitation,rain,wind_speed_10m"
+        req = urllib.request.Request(weather_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            resp = json.loads(response.read().decode('utf-8'))
+            current = resp.get("current", {})
+            data["temperature"] = float(current.get("temperature_2m", 25.0))
+            data["humidity"] = float(current.get("relative_humidity_2m", 50.0))
+            data["rain"] = float(current.get("rain", 0.0))
+            data["wind_speed"] = float(current.get("wind_speed_10m", 0.0))
+
+        # 2. Air quality for Peenya
+        if node_id == "E":
+            aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=pm2_5,carbon_monoxide"
+            req_aq = urllib.request.Request(aq_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req_aq, timeout=5) as response:
+                resp_aq = json.loads(response.read().decode('utf-8'))
+                current_aq = resp_aq.get("current", {})
+                data["pm2_5"] = float(current_aq.get("pm2_5", 15.0))
+                data["co"] = float(current_aq.get("carbon_monoxide", 120.0))
+                data["gasLevel"] = 100.0 + (data["co"] / 5.0)
+        elif node_id == "A":
+            data["gasLevel"] = data["wind_speed"]
+        elif node_id == "B":
+            data["gasLevel"] = data["rain"]
+        else:
+            data["gasLevel"] = 100.0
+
+    except Exception as e:
+        log.error("Failed to fetch live weather data for node %s: %s", node_id, e)
+
+    # Save to cache
+    with api_cache_lock:
+        api_cache[node_id] = {
+            "timestamp": now,
+            "data": data
+        }
+
+    return data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -182,6 +276,7 @@ class NodeState:
             self.data["status"] = "active"
 
     def to_dict(self) -> dict:
+        coords = BANGALORE_COORDS.get(self.id, {"lat": 12.9716, "lon": 77.5946})
         return {
             "id":    self.id,
             "label": self.label,
@@ -189,6 +284,8 @@ class NodeState:
             "ny":    self.ny,
             "x":     self.nx,
             "y":     self.ny,
+            "lat":   coords["lat"],
+            "lon":   coords["lon"],
             "data":  dict(self.data),
         }
 
@@ -387,7 +484,9 @@ topology = TopologyManager()
 def failure_watcher():
     while True:
         eventlet.sleep(NODE_FAILURE_CHECK_INTERVAL)
-        global PAUSE_UNTIL
+        global PAUSE_UNTIL, current_mode
+        if current_mode != "hardware":
+            continue
         if time.time() < PAUSE_UNTIL:
             continue
         failed = topology.check_failures()
@@ -400,6 +499,163 @@ def failure_watcher():
                 "message":   f"Node {node_id} heartbeat timeout — marked FAILED",
             })
             socketio.emit("topology_update", topology.snapshot())
+
+# ──────────────────────────────────────────────
+# Online Mode Node Initialization (module-level)
+# ──────────────────────────────────────────────
+
+def init_online_nodes():
+    """Initialize all 5 Bangalore nodes with K5 full-mesh topology for online mode.
+    Safe to call multiple times — only creates edges/nodes if they don't exist.
+    """
+    for node_id, coords in BANGALORE_COORDS.items():
+        node = topology.get_or_create_node(node_id, coords["label"])
+        if node_id == "A":
+            node.nx, node.ny = 0.50, 0.15
+        elif node_id == "B":
+            node.nx, node.ny = 0.82, 0.35
+        elif node_id == "C":
+            node.nx, node.ny = 0.72, 0.72
+        elif node_id == "D":
+            node.nx, node.ny = 0.28, 0.72
+        elif node_id == "E":
+            node.nx, node.ny = 0.18, 0.35
+        node.x = node.nx
+        node.y = node.ny
+        # Keep heartbeat fresh so node isn't marked failed
+        node.last_heartbeat = time.time()
+        if node.data.get("status") == "failed":
+            node.data["status"] = "active"
+
+    # Full K5 complete graph — all 10 pairs connected with Haversine distances
+    all_pairs = [
+        ('A', 'B'), ('A', 'C'), ('A', 'D'), ('A', 'E'),
+        ('B', 'C'), ('B', 'D'), ('B', 'E'),
+        ('C', 'D'), ('C', 'E'),
+        ('D', 'E'),
+    ]
+    for u, v in all_pairs:
+        c1 = BANGALORE_COORDS[u]
+        c2 = BANGALORE_COORDS[v]
+        dist = get_haversine_distance(c1["lat"], c1["lon"], c2["lat"], c2["lon"])
+        existing = next(
+            (e for e in topology.edges
+             if (e["source"] == u and e["target"] == v) or
+                (e["source"] == v and e["target"] == u)),
+            None
+        )
+        if not existing:
+            topology.edges.append({
+                "source": u,
+                "target": v,
+                "weight": round(dist, 2),
+                "data": {
+                    "latency": round(dist, 2),
+                    "bandwidth": 200.0,
+                    "packetLoss": 0.0,
+                    "rssi": -50.0,
+                    "status": "active"
+                }
+            })
+            topology.G.add_edge(u, v, weight=round(dist, 2))
+    log.info("Online nodes A-E initialized with K5 topology")
+
+
+# ──────────────────────────────────────────────
+# Mock Hardware / Online Data Loop
+# ──────────────────────────────────────────────
+
+def mock_hardware_loop():
+    log.info("Starting mock hardware / online data loop")
+
+    # Online mode: pre-initializes all 5 Bangalore nodes via init_online_nodes()
+    # Hardware mode: starts EMPTY — nodes appear only when real ESP MQTT messages arrive
+
+    global PAUSE_UNTIL, current_mode
+    if current_mode == "online":
+        init_online_nodes()
+
+    while True:
+        eventlet.sleep(5.0)
+
+        if current_mode == "simulation":
+            continue
+
+        if current_mode == "online" and len(topology.nodes) == 0:
+            init_online_nodes()
+
+        if time.time() < PAUSE_UNTIL:
+            continue
+
+        updated_any = False
+        if current_mode == "online":
+            for node_id in BANGALORE_COORDS.keys():
+                node = topology.nodes.get(node_id)
+                if not node:
+                    continue
+
+                # Keep heartbeat fresh and node active in online mode
+                node.last_heartbeat = time.time()
+                if node.data["status"] == "failed":
+                    node.data["status"] = "active"
+
+                live_data = fetch_live_node_data(node_id)
+                if live_data:
+                    node.data["temperature"] = live_data["temperature"]
+                    node.data["humidity"] = live_data["humidity"]
+                    node.data["gasLevel"] = live_data["gasLevel"]
+                    node.data["battery"] = max(10.0, (node.data.get("battery") or 100.0) - 0.01)
+
+                    node._recalculate_status()
+
+                    topology._packet_stats["totalPacketsSent"] += 2
+                    topology._packet_stats["totalPacketsDelivered"] += 2
+
+                    socketio.emit("node_update", {
+                        "nodeId": node_id,
+                        "node": node.to_dict(),
+                        "timestamp": time.time(),
+                    })
+
+                    save_telemetry(
+                        node_id=node_id,
+                        temperature=node.data["temperature"],
+                        humidity=node.data["humidity"],
+                        gas_level=node.data["gasLevel"],
+                        battery=node.data["battery"]
+                    )
+                    updated_any = True
+
+        elif current_mode == "hardware":
+            # Hardware: only fetch live weather for nodes that connected via real ESP MQTT
+            for node_id, node in list(topology.nodes.items()):
+                if node.data.get("status") != "failed":
+                    live_data = fetch_live_node_data(node_id)
+                    if live_data:
+                        node.data["temperature"] = live_data["temperature"]
+                        node.data["humidity"] = live_data["humidity"]
+                        node.data["gasLevel"] = live_data["gasLevel"]
+
+                        node._recalculate_status()
+
+                        socketio.emit("node_update", {
+                            "nodeId": node_id,
+                            "node": node.to_dict(),
+                            "timestamp": time.time(),
+                        })
+
+                        save_telemetry(
+                            node_id=node_id,
+                            temperature=node.data["temperature"],
+                            humidity=node.data["humidity"],
+                            gas_level=node.data["gasLevel"],
+                            battery=node.data["battery"]
+                        )
+                        updated_any = True
+
+        if updated_any:
+            socketio.emit("topology_update", topology.snapshot())
+            socketio.emit("stats_update", topology.get_health())
 
 # ──────────────────────────────────────────────
 # MQTT Handlers
@@ -455,7 +711,18 @@ def on_message(client, userdata, msg):
 
 
 def _handle_sensor(node_id: str, payload: dict):
-    node = topology.get_or_create_node(node_id, payload.get("label"))
+    coords = BANGALORE_COORDS.get(node_id, {})
+    label = coords.get("label", payload.get("label"))
+    
+    node = topology.get_or_create_node(node_id, label)
+    
+    # Query live real-time weather/sensor details from Open-Meteo
+    live_data = fetch_live_node_data(node_id)
+    if live_data:
+        payload["temperature"] = live_data["temperature"]
+        payload["humidity"] = live_data["humidity"]
+        payload["gasLevel"] = live_data["gasLevel"]
+        
     raw_temp = payload.get("temperature", payload.get("temp", "N/A"))
     raw_gas = payload.get("gasLevel", payload.get("gas", "N/A"))
     node.update_sensors(payload)
@@ -617,9 +884,46 @@ def api_mqtt_status():
     })
 
 
+@app.route("/api/mode", methods=["GET"])
+def api_get_mode():
+    global current_mode
+    return jsonify({"mode": current_mode})
+
+
+@app.route("/api/mode", methods=["POST"])
+def api_post_mode():
+    global current_mode
+    data = request.json or {}
+    mode = data.get("mode")
+    if mode in ["simulation", "online", "hardware"]:
+        old_mode = current_mode
+        current_mode = mode
+        log.info("System mode changed on backend to: %s", current_mode)
+
+        # When switching TO hardware mode, clear topology so only real ESP nodes appear.
+        # Nodes will be added back only when real MQTT messages arrive.
+        if mode == "hardware" and old_mode != "hardware":
+            with topology._lock:
+                topology.nodes.clear()
+                topology.edges.clear()
+                topology.G.clear()
+            log.info("Hardware mode: topology cleared — waiting for real ESP MQTT messages")
+        elif mode == "online":
+            # ONLINE mode: initialize all 5 nodes immediately (not waiting for background loop)
+            init_online_nodes()
+            log.info("Online mode: Bangalore nodes A-E initialized immediately")
+
+        # Notify all connected clients of topology and stats on mode change
+        socketio.emit("topology_update", topology.snapshot())
+        socketio.emit("stats_update", topology.get_health())
+        return jsonify({"status": "ok", "mode": current_mode})
+    return jsonify({"error": "Invalid mode"}), 400
+
+
 @app.route("/api/status", methods=["GET"])
 def api_status():
-    return jsonify({"status": "online", "mode": "hardware"})
+    global current_mode
+    return jsonify({"status": "online", "mode": current_mode})
 
 
 @app.route("/api/reports/history", methods=["GET"])
@@ -683,6 +987,9 @@ if __name__ == "__main__":
 
     # Start heartbeat failure watcher in eventlet green thread
     eventlet.spawn(failure_watcher)
+    
+    # Start mock hardware loop to populate Bangalore nodes A-E for testing without nodes
+    eventlet.spawn(mock_hardware_loop)
 
     socketio.run(
         app,

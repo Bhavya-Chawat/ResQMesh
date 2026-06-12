@@ -36,12 +36,19 @@ const C = {
 };
 
 export default function NetworkCenter() {
-  const { graph, sim } = useApp();
+  const { graph, sim, dataSourceManager, tick, packetFlowActive } = useApp();
   const [selectedNode, setSelectedNode] = useState('A');
   const [hoveredNode, setHoveredNode] = useState(null);
-  const [, setTick] = useState(0);
   const [viewTab, setViewTab] = useState('routing');
   const [activeAnatomyIndex, setActiveAnatomyIndex] = useState(null);
+
+  const mapRef = useRef(null);
+  const mapDivRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const polylinesRef = useRef([]);
+  const weightLabelsRef = useRef([]);
+  const packetMarkersRef = useRef(new Map());
+  const [radarLayer, setRadarLayer] = useState(null);
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -52,12 +59,30 @@ export default function NetworkCenter() {
   useEffect(() => { selectedNodeRef.current = selectedNode; }, [selectedNode]);
   useEffect(() => { hoveredNodeRef.current = hoveredNode; }, [hoveredNode]);
 
-  useEffect(() => {
-    const unsub = sim.subscribe(() => setTick(t => t + 1));
-    return unsub;
-  }, [sim]);
+  // Global tick handles updates for both simulation and hardware modes
 
-  const nodeIds = Array.from(graph.nodes.keys());
+  const isNodeOnline = useCallback((n) => {
+    if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+      return n.data.status !== 'failed';
+    }
+    return true;
+  }, [dataSourceManager?.mode]);
+
+  const nodeIds = Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)));
+
+  // Redirect selectedNode if it goes offline in hardware mode
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+      const node = graph.nodes.get(selectedNode);
+      if (!node || node.data.status === 'failed') {
+        const firstOnline = Array.from(graph.nodes.keys()).find(id => graph.nodes.get(id)?.data.status !== 'failed');
+        if (firstOnline) {
+          setSelectedNode(firstOnline);
+        }
+      }
+    }
+  }, [graph, selectedNode, dataSourceManager?.mode, tick]);
+
   const routingTable = graph.getRoutingTable(selectedNode);
   const { matrix, nodeIds: matrixIds } = graph.getAdjacencyMatrix();
   const recentPackets = sim.packets.slice(-20).reverse();
@@ -79,6 +104,7 @@ export default function NetworkCenter() {
 
   // Canvas loop — runs ONCE on mount, reads state via refs to avoid stale closures
   useEffect(() => {
+    if (dataSourceManager?.mode !== 'simulation') return;
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
@@ -277,37 +303,38 @@ export default function NetworkCenter() {
         }
       }
 
-      // Draw packet flow animations
-      const flowSpeed = 0.55;
-      curRoutingTable.forEach(route => {
-        if (route.path && route.path.length > 1 && route.destination !== curSelected) {
-          const path = route.path;
-          const totalHops = path.length - 1;
-          const progress = (time * flowSpeed) % totalHops;
-          const segmentIdx = Math.floor(progress);
-          const segmentT = progress - segmentIdx;
+      // Draw packet flow animations — only when packetFlowActive
+      if (packetFlowActive) {
+        curRoutingTable.forEach(route => {
+          if (route.path && route.path.length > 1 && route.destination !== curSelected) {
+            const path = route.path;
+            const totalHops = path.length - 1;
+            const progress = (time * flowSpeed) % totalHops;
+            const segmentIdx = Math.floor(progress);
+            const segmentT = progress - segmentIdx;
 
-          const n1 = graph.nodes.get(path[segmentIdx]);
-          const n2 = graph.nodes.get(path[segmentIdx + 1]);
+            const n1 = graph.nodes.get(path[segmentIdx]);
+            const n2 = graph.nodes.get(path[segmentIdx + 1]);
 
-          if (n1 && n2 && n1.data.status !== 'failed' && n2.data.status !== 'failed') {
-            const p1 = nPos(n1, w, h, PAD);
-            const p2 = nPos(n2, w, h, PAD);
-            const px = p1.x + (p2.x - p1.x) * segmentT;
-            const py = p1.y + (p2.y - p1.y) * segmentT;
+            if (n1 && n2 && n1.data.status !== 'failed' && n2.data.status !== 'failed') {
+              const p1 = nPos(n1, w, h, PAD);
+              const p2 = nPos(n2, w, h, PAD);
+              const px = p1.x + (p2.x - p1.x) * segmentT;
+              const py = p1.y + (p2.y - p1.y) * segmentT;
 
-            const isHoveredPath = highlightPath && highlightPath.includes(n1.id) && highlightPath.includes(n2.id);
+              const isHoveredPath = highlightPath && highlightPath.includes(n1.id) && highlightPath.includes(n2.id);
 
-            ctx.fillStyle = isHoveredPath ? C.yellow : C.cyan;
-            ctx.shadowColor = isHoveredPath ? C.yellow : C.cyan;
-            ctx.shadowBlur = isHoveredPath ? 12 : 8;
-            ctx.beginPath();
-            ctx.arc(px, py, isHoveredPath ? 5.5 : 4, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
+              ctx.fillStyle = isHoveredPath ? C.yellow : C.cyan;
+              ctx.shadowColor = isHoveredPath ? C.yellow : C.cyan;
+              ctx.shadowBlur = isHoveredPath ? 12 : 8;
+              ctx.beginPath();
+              ctx.arc(px, py, isHoveredPath ? 5.5 : 4, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.shadowBlur = 0;
+            }
           }
-        }
-      });
+        });
+      }
 
       // Draw nodes — all colors use hex (CSS vars don't work in Canvas2D)
       for (const [id, node] of graph.nodes) {
@@ -394,14 +421,403 @@ export default function NetworkCenter() {
     }
     draw();
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph, dataSourceManager?.mode]);
+
+  // Fetch RainViewer radar layer timestamp
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.radar && data.radar.past && data.radar.past.length > 0) {
+          const latest = data.radar.past[data.radar.past.length - 1].time;
+          setRadarLayer(`https://tilecache.rainviewer.com/v2/radar/${latest}/256/{z}/{x}/{y}/2/1_1.png`);
+        }
+      })
+      .catch(err => console.error("Error fetching radar timestamp:", err));
+  }, [dataSourceManager?.mode]);
+
+  // Initialize Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      return;
+    }
+    if (!mapDivRef.current || mapRef.current) return;
+
+    const L = window.L;
+    if (!L) return;
+
+    const map = L.map(mapDivRef.current, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([12.9716, 77.5946], 12); // Centered on Bangalore
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [dataSourceManager?.mode]);
+
+  // Sync radar layer
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L || !radarLayer) return;
+
+    const layer = L.tileLayer(radarLayer, {
+      opacity: 0.45,
+      zIndex: 10,
+      maxNativeZoom: 7
+    }).addTo(map);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [radarLayer, dataSourceManager?.mode]);
+
+  // Sync nodes, links, and paths on Leaflet Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    // 1. Remove old polylines and weight labels
+    for (const pl of polylinesRef.current) {
+      map.removeLayer(pl);
+    }
+    polylinesRef.current = [];
+
+    for (const lbl of weightLabelsRef.current) {
+      map.removeLayer(lbl);
+    }
+    weightLabelsRef.current = [];
+
+    const curSelected = selectedNodeRef.current;
+    const curHovered = hoveredNodeRef.current;
+    const curRoutingTable = graph.getRoutingTable(curSelected);
+    const hoveredRoute = curRoutingTable.find(r => r.destination === curHovered);
+    const highlightPath = hoveredRoute ? hoveredRoute.path : null;
+
+    // 2. Render standard/highlight links (Polylines)
+    for (const edge of graph.edges) {
+      const src = graph.nodes.get(edge.source);
+      const tgt = graph.nodes.get(edge.target);
+      if (!src || !tgt) continue;
+      if (!isNodeOnline(src) || !isNodeOnline(tgt)) continue;
+
+      const isFailed = src.data.status === 'failed' || tgt.data.status === 'failed';
+
+      // Check if edge is in active hovered path
+      let isPathHighlighted = false;
+      if (highlightPath) {
+        for (let i = 0; i < highlightPath.length - 1; i++) {
+          if ((highlightPath[i] === edge.source && highlightPath[i+1] === edge.target) ||
+              (highlightPath[i] === edge.target && highlightPath[i+1] === edge.source)) {
+            isPathHighlighted = true;
+            break;
+          }
+        }
+      }
+
+      // Check if edge is in any routing path from selectedNode
+      let isAnyPath = false;
+      if (!isPathHighlighted && curSelected) {
+        for (const route of curRoutingTable) {
+          if (route.path) {
+            for (let i = 0; i < route.path.length - 1; i++) {
+              if ((route.path[i] === edge.source && route.path[i+1] === edge.target) ||
+                  (route.path[i] === edge.target && route.path[i+1] === edge.source)) {
+                isAnyPath = true;
+                break;
+              }
+            }
+          }
+          if (isAnyPath) break;
+        }
+      }
+
+      let color = 'rgba(11, 18, 32, 0.15)';
+      let weight = 1.5;
+      let opacity = 0.55;
+      let dashArray = null;
+
+      if (isFailed) {
+        color = '#ff1744';
+        weight = 1.5;
+        dashArray = '4, 4';
+        opacity = 0.35;
+      } else if (isPathHighlighted) {
+        color = '#FFC85C'; // yellow
+        weight = 4;
+        opacity = 0.95;
+      } else if (isAnyPath) {
+        color = '#00E5FF'; // cyan
+        weight = 2.5;
+        opacity = 0.75;
+      }
+
+      const polyline = L.polyline([[src.lat, src.lon], [tgt.lat, tgt.lon]], {
+        color,
+        weight,
+        opacity,
+        dashArray
+      }).addTo(map);
+      polylinesRef.current.push(polyline);
+
+      // Label at midpoint
+      if (!isFailed) {
+        const midLat = (src.lat + tgt.lat) / 2;
+        const midLon = (src.lon + tgt.lon) / 2;
+        const labelColor = isPathHighlighted ? '#FFC85C' : isAnyPath ? '#00E5FF' : 'rgba(11,18,32,0.5)';
+        const labelWeight = isPathHighlighted || isAnyPath ? 'bold' : 'normal';
+
+        const labelMarker = L.marker([midLat, midLon], {
+          icon: L.divIcon({
+            html: `<div style="font-family: var(--font-mono); font-size: 0.65rem; color: ${labelColor}; text-align: center; white-space: nowrap; font-weight: ${labelWeight}">${edge.weight.toFixed(1)}${dataSourceManager?.mode === 'simulation' ? 'ms' : ' km'}</div>`,
+            className: 'edge-weight-label',
+            iconSize: [40, 12],
+            iconAnchor: [20, 6]
+          }),
+          interactive: false
+        }).addTo(map);
+        weightLabelsRef.current.push(labelMarker);
+      }
+    }
+
+    // 3. Render/Update nodes (Markers)
+    const currentIds = new Set(
+      Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)))
+    );
+
+    // Remove markers for deleted or offline nodes
+    for (const [id, marker] of markersRef.current.entries()) {
+      if (!currentIds.has(id)) {
+        map.removeLayer(marker);
+        markersRef.current.delete(id);
+      }
+    }
+
+    for (const [id, node] of graph.nodes.entries()) {
+      if (!isNodeOnline(node)) continue;
+      let marker = markersRef.current.get(id);
+
+      const isSelected = id === curSelected;
+      const isHovered = id === curHovered;
+      const isFailed = node.data.status === 'failed';
+      const isCritical = node.data.status === 'critical';
+      const isWarning = node.data.status === 'warning';
+
+      let isPathNode = false;
+      if (highlightPath) {
+        isPathNode = highlightPath.includes(id);
+      }
+
+      const size = isSelected ? 14 : isHovered ? 12 : 10;
+
+      let color = '#00E5FF'; // cyan
+      if (isFailed || isCritical) color = '#ff1744'; // red
+      else if (isWarning) color = '#FFC85C'; // yellow
+      else if (isSelected) color = '#c9ff00'; // chartreuse
+      else if (isHovered) color = '#FFC85C'; // yellow
+
+      const markerHtml = `
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+          <!-- Node Label -->
+          <div style="
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            font-weight: bold;
+            color: #ffffff;
+            background: rgba(0,0,0,0.65);
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-bottom: 2px;
+            white-space: nowrap;
+            border: 1px solid ${isSelected ? '#c9ff00' : isHovered ? '#FFC85C' : 'rgba(255,255,255,0.1)'};
+          ">
+            ${node.label}
+          </div>
+
+          <!-- Circle & Sonar -->
+          <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+            ${isSelected && !isFailed ? '<div class="sonar-pulse-ring" style="border-color:#c9ff00;"></div>' : ''}
+            ${isHovered && !isFailed ? '<div class="sonar-pulse-ring" style="border-color:#FFC85C;"></div>' : ''}
+            <div style="
+              width: ${size}px;
+              height: ${size}px;
+              background-color: ${color};
+              border-radius: 50%;
+              border: 2px solid #ffffff;
+              box-shadow: 0 0 10px ${color};
+            "></div>
+          </div>
+        </div>
+      `;
+
+      const markerOptions = {
+        icon: L.divIcon({
+          html: markerHtml,
+          className: 'network-node-icon',
+          iconSize: [80, 80],
+          iconAnchor: [40, 50]
+        }),
+        zIndexOffset: isSelected ? 1000 : isHovered ? 500 : 0
+      };
+
+      if (!marker) {
+        marker = L.marker([node.lat, node.lon], markerOptions).addTo(map);
+        marker.on('click', () => {
+          setSelectedNode(id);
+        });
+        marker.on('mouseover', () => {
+          setHoveredNode(id);
+        });
+        marker.on('mouseout', () => {
+          setHoveredNode(null);
+        });
+        markersRef.current.set(id, marker);
+      } else {
+        marker.setLatLng([node.lat, node.lon]);
+        marker.setIcon(markerOptions.icon);
+        marker.setZIndexOffset(isSelected ? 1000 : isHovered ? 500 : 0);
+        if (!map.hasLayer(marker)) {
+          marker.addTo(map);
+        }
+      }
+    }
+  }, [graph, selectedNode, hoveredNode, dataSourceManager?.mode, tick]);
+
+  // Packet animation loop on Leaflet Map — only when packetFlowActive
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    // Clean up old packet markers when unmounting or mode changes
+    const cleanUpPacketMarkers = () => {
+      for (const m of packetMarkersRef.current.values()) {
+        map.removeLayer(m);
+      }
+      packetMarkersRef.current.clear();
+    };
+
+    if (!packetFlowActive) {
+      cleanUpPacketMarkers();
+      return;
+    }
+
+    let animId;
+    let time = 0;
+    const drawPackets = () => {
+      time += 0.016;
+      const flowSpeed = 0.55;
+      const curSelected = selectedNodeRef.current;
+      const curHovered = hoveredNodeRef.current;
+      const curRoutingTable = graph.getRoutingTable(curSelected);
+      const hoveredRoute = curRoutingTable.find(r => r.destination === curHovered);
+      const highlightPath = hoveredRoute ? hoveredRoute.path : null;
+
+      const activePacketIds = new Set();
+
+      // For filtering offline nodes in hardware mode
+      const isNodeOnline = (n) => {
+        if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+          return n.data.status !== 'failed';
+        }
+        return true;
+      };
+
+      curRoutingTable.forEach((route, rIdx) => {
+        if (route.path && route.path.length > 1 && route.destination !== curSelected) {
+          const path = route.path;
+          
+          // Check if path nodes are online
+          let pathValid = true;
+          for (const id of path) {
+            const n = graph.nodes.get(id);
+            if (!n || !isNodeOnline(n)) {
+              pathValid = false;
+              break;
+            }
+          }
+
+          if (pathValid) {
+            const totalHops = path.length - 1;
+            const progress = (time * flowSpeed) % totalHops;
+            const segmentIdx = Math.floor(progress);
+            const segmentT = progress - segmentIdx;
+
+            const n1 = graph.nodes.get(path[segmentIdx]);
+            const n2 = graph.nodes.get(path[segmentIdx + 1]);
+
+            if (n1 && n2) {
+              const pLat = n1.lat + (n2.lat - n1.lat) * segmentT;
+              const pLon = n1.lon + (n2.lon - n1.lon) * segmentT;
+
+              const isHoveredPath = highlightPath && highlightPath.includes(n1.id) && highlightPath.includes(n2.id);
+              const color = isHoveredPath ? C.yellow : C.cyan;
+              const radius = isHoveredPath ? 7 : 5;
+
+              const pktId = `flow-${rIdx}`;
+              activePacketIds.add(pktId);
+
+              let marker = packetMarkersRef.current.get(pktId);
+              if (!marker) {
+                marker = L.circleMarker([pLat, pLon], {
+                  radius: radius,
+                  fillColor: color,
+                  fillOpacity: 0.95,
+                  color: '#ffffff',
+                  weight: 1.5,
+                  className: 'pulse-packet-marker'
+                }).addTo(map);
+                packetMarkersRef.current.set(pktId, marker);
+              } else {
+                marker.setLatLng([pLat, pLon]);
+                marker.setStyle({
+                  radius: radius,
+                  fillColor: color
+                });
+              }
+            }
+          }
+        }
+      });
+
+      // Remove any markers that are no longer active
+      for (const [id, marker] of packetMarkersRef.current.entries()) {
+        if (!activePacketIds.has(id)) {
+          map.removeLayer(marker);
+          packetMarkersRef.current.delete(id);
+        }
+      }
+
+      animId = requestAnimationFrame(drawPackets);
+    };
+
+    drawPackets();
+
     return () => {
       cancelAnimationFrame(animId);
-      ro.disconnect();
-      canvas.removeEventListener('mousedown', handleCanvasClick);
-      canvas.removeEventListener('mousemove', handleCanvasMouseMove);
+      cleanUpPacketMarkers();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph]); // Run once — state accessed via refs
+  }, [graph, dataSourceManager?.mode, tick, packetFlowActive]);
 
   return (
     <div className="page-container animate-fade-in" style={{ padding: '24px 40px', width: '100%', boxSizing: 'border-box' }}>
@@ -438,7 +854,11 @@ export default function NetworkCenter() {
             Hover over a node to draw its path from <strong style={{ color: 'var(--nash-chartreuse)' }}>{graph.nodes.get(selectedNode)?.label}</strong>. Pulse dots represent routing packets forwarding in real-time.
           </p>
           <div ref={containerRef} style={{ flex: 1, position: 'relative', marginTop: 4, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.03)' }}>
-            <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+            {dataSourceManager?.mode === 'simulation' ? (
+              <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+            ) : (
+              <div ref={mapDivRef} style={{ width: '100%', height: '100%', minHeight: '600px', background: '#05020f' }} />
+            )}
           </div>
         </div>
 
@@ -465,7 +885,7 @@ export default function NetworkCenter() {
             <div className="panel glass-panel animate-slide-in" style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', marginBottom: 0 }}>
               <div className="section-header" style={{ marginBottom: '6px' }}>Dijkstra Shortest Routing Table</div>
               <p style={{ fontFamily: 'var(--font-body)', fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
-                Computed dynamically. Lists the next hop, hop count, and cumulative latency path from <strong style={{ color: 'var(--neon-cyan)' }}>Node {selectedNode}</strong>.
+                Computed dynamically. Lists the next hop, hop count, and {dataSourceManager?.mode === 'simulation' ? 'cumulative latency' : 'physical distance (km)'} from <strong style={{ color: 'var(--neon-cyan)' }}>Node {selectedNode}</strong>.
               </p>
               <div className="panel-scroll" style={{ flex: 1 }}>
                 <table className="data-table">
@@ -485,7 +905,7 @@ export default function NetworkCenter() {
                         <tr key={r.destination} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                           <td style={{ color: 'var(--neon-cyan)', fontWeight: 'bold', padding: '14px 10px' }}>{r.destLabel}</td>
                           <td style={{ color: 'var(--warm-yellow)', padding: '14px 10px' }}>{r.nextHopLabel}</td>
-                          <td style={{ padding: '14px 10px' }}>{r.distance === Infinity ? '∞' : `${r.distance.toFixed(1)}ms`}</td>
+                          <td style={{ padding: '14px 10px' }}>{r.distance === Infinity ? '∞' : `${r.distance.toFixed(1)}${dataSourceManager?.mode === 'simulation' ? 'ms' : ' km'}`}</td>
                           <td style={{ padding: '14px 10px' }}>{r.hopCount}</td>
                           <td style={{ padding: '14px 10px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -705,7 +1125,7 @@ export default function NetworkCenter() {
                       {graph.getNeighbors(id).map(n => (
                         <span key={n.nodeId} style={{ marginRight: '12px', display: 'inline-block' }}>
                           <span style={{ color: 'var(--warm-yellow)' }}>{graph.nodes.get(n.nodeId)?.label}</span>
-                          (<span style={{ color: 'var(--nash-chartreuse)' }}>{n.weight.toFixed(1)}</span>)
+                          (<span style={{ color: 'var(--nash-chartreuse)' }}>{n.weight.toFixed(1)}{dataSourceManager?.mode === 'simulation' ? '' : ' km'}</span>)
                         </span>
                       ))}
                     </div>

@@ -31,34 +31,38 @@ class WebSocketService {
 
   connect() {
     if (this._socket) return;
+    this._manualClose = false;
 
     // Dynamically import socket.io-client only when hardware mode is active
     import('socket.io-client').then(({ io }) => {
-      this._socket = io(BACKEND_URL, {
+      if (this._manualClose) return;
+
+      const socketInstance = io(BACKEND_URL, {
         transports:      ['websocket', 'polling'],
         reconnection:    true,
         reconnectionDelay: this._reconnectMs,
         timeout:         10000,
       });
+      this._socket = socketInstance;
 
-      this._socket.on('connect', () => {
+      socketInstance.on('connect', () => {
         this._connected = true;
         this._manualClose = false;
         console.info('[ResQMesh WS] Connected to backend:', BACKEND_URL);
         this._emit('_connected', { url: BACKEND_URL });
 
         // Request fresh state on (re)connect
-        this._socket.emit('request_topology');
-        this._socket.emit('request_stats');
+        socketInstance.emit('request_topology');
+        socketInstance.emit('request_stats');
       });
 
-      this._socket.on('disconnect', (reason) => {
+      socketInstance.on('disconnect', (reason) => {
         this._connected = false;
         console.warn('[ResQMesh WS] Disconnected:', reason);
         this._emit('_disconnected', { reason });
       });
 
-      this._socket.on('connect_error', (err) => {
+      socketInstance.on('connect_error', (err) => {
         console.error('[ResQMesh WS] Connection error:', err.message);
         this._emit('_error', { message: err.message });
       });
@@ -74,7 +78,7 @@ class WebSocketService {
       ];
 
       for (const evtName of backendEvents) {
-        this._socket.on(evtName, (data) => {
+        socketInstance.on(evtName, (data) => {
           this._emit(evtName, data);
         });
       }

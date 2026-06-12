@@ -4,10 +4,33 @@
  * for mesh network simulation and academic visualization.
  */
 
+const BANGALORE_COORDS = {
+  A: { lat: 13.0359, lon: 77.5978, label: "Hebbal Flyover (Bridge)" },
+  B: { lat: 12.9176, lon: 77.6244, label: "Silk Board Junction (Underpass)" },
+  C: { lat: 12.9784, lon: 77.5695, label: "Majestic Transit Hub" },
+  D: { lat: 12.9840, lon: 77.7511, label: "Whitefield IT Corridor" },
+  E: { lat: 13.0284, lon: 77.5198, label: "Peenya Industrial Area" }
+};
+
+export function getHaversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Radius of the Earth in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+}
+
 export class GraphNode {
   constructor(id, label, x, y, data = {}) {
     this.id = id;
-    this.label = label || `Node ${id}`;
+    const coords = BANGALORE_COORDS[id] || { lat: 12.9716, lon: 77.5946, label: label || `Node ${id}` };
+    this.label = coords.label;
+    this.lat = coords.lat;
+    this.lon = coords.lon;
     // Store positions as 0-1 normalized fractions so they scale to any canvas
     this.nx = x; // normalized x (0..1)
     this.ny = y; // normalized y (0..1)
@@ -306,6 +329,7 @@ export class MeshGraph {
       visited: new Set(visited),
       current: sourceId,
       pq: [...pq],
+      previous: new Map(prev),
     });
 
     while (pq.length > 0) {
@@ -323,13 +347,16 @@ export class MeshGraph {
         visited: new Set(visited),
         current: u,
         pq: [...pq],
+        previous: new Map(prev),
       });
 
       const neighbors = this.getNeighbors(u);
-      for (const { nodeId: v, weight } of neighbors) {
+      for (const neighbor of neighbors) {
+        const { nodeId: v, edge } = neighbor;
         if (visited.has(v)) continue;
         if (this.nodes.get(v)?.data.status === 'failed') continue;
 
+        const weight = edge ? edge.weight : neighbor.weight;
         const alt = dist.get(u) + weight;
         const vLabel = this.nodes.get(v)?.label || v;
 
@@ -344,6 +371,7 @@ export class MeshGraph {
             oldDist: dist.get(v),
             newDist: alt,
             pq: [...pq],
+            previous: new Map(prev),
           });
           dist.set(v, alt);
           prev.set(v, u);
@@ -383,6 +411,7 @@ export class MeshGraph {
       description: `Initialize Bellman-Ford from ${this.nodes.get(sourceId)?.label}`,
       distances: new Map(dist),
       iteration: 0,
+      previous: new Map(prev),
     });
 
     const V = nodeIds.length;
@@ -404,6 +433,7 @@ export class MeshGraph {
               relaxEdge: { source: u, target: v },
               oldDist: dist.get(v),
               newDist: dist.get(u) + edge.weight,
+              previous: new Map(prev),
             });
             dist.set(v, dist.get(u) + edge.weight);
             prev.set(v, u);
@@ -418,6 +448,7 @@ export class MeshGraph {
         distances: new Map(dist),
         iteration: i,
         converged: !updated,
+        previous: new Map(prev),
       });
 
       if (!updated) break;
@@ -442,6 +473,8 @@ export class MeshGraph {
     const queue = [sourceId];
     visited.add(sourceId);
     const order = [];
+    const prev = new Map();
+    prev.set(sourceId, null);
 
     steps.push({
       type: 'init',
@@ -449,6 +482,7 @@ export class MeshGraph {
       visited: new Set(visited),
       queue: [...queue],
       current: sourceId,
+      previous: new Map(prev),
     });
 
     while (queue.length > 0) {
@@ -463,6 +497,7 @@ export class MeshGraph {
         queue: [...queue],
         current,
         order: [...order],
+        previous: new Map(prev),
       });
 
       const neighbors = this.getNeighbors(current);
@@ -470,6 +505,7 @@ export class MeshGraph {
         if (!visited.has(nodeId) && this.nodes.get(nodeId)?.data.status !== 'failed') {
           visited.add(nodeId);
           queue.push(nodeId);
+          prev.set(nodeId, current);
           const nLabel = this.nodes.get(nodeId)?.label || nodeId;
           steps.push({
             type: 'enqueue',
@@ -479,6 +515,7 @@ export class MeshGraph {
             current,
             discovered: nodeId,
             order: [...order],
+            previous: new Map(prev),
           });
         }
       }
@@ -489,6 +526,7 @@ export class MeshGraph {
       description: `BFS complete! Visited ${order.length} nodes.`,
       visited: new Set(visited),
       order,
+      previous: new Map(prev),
     });
 
     return { steps, order, visited };
@@ -502,6 +540,8 @@ export class MeshGraph {
     const visited = new Set();
     const stack = [sourceId];
     const order = [];
+    const prev = new Map();
+    prev.set(sourceId, null);
 
     steps.push({
       type: 'init',
@@ -509,6 +549,7 @@ export class MeshGraph {
       visited: new Set(visited),
       stack: [...stack],
       current: sourceId,
+      previous: new Map(prev),
     });
 
     while (stack.length > 0) {
@@ -525,12 +566,14 @@ export class MeshGraph {
         stack: [...stack],
         current,
         order: [...order],
+        previous: new Map(prev),
       });
 
       const neighbors = this.getNeighbors(current);
       for (const { nodeId } of neighbors) {
         if (!visited.has(nodeId) && this.nodes.get(nodeId)?.data.status !== 'failed') {
           stack.push(nodeId);
+          prev.set(nodeId, current);
           const nLabel = this.nodes.get(nodeId)?.label || nodeId;
           steps.push({
             type: 'push',
@@ -540,6 +583,7 @@ export class MeshGraph {
             current,
             discovered: nodeId,
             order: [...order],
+            previous: new Map(prev),
           });
         }
       }
@@ -550,6 +594,7 @@ export class MeshGraph {
       description: `DFS complete! Visited ${order.length} nodes.`,
       visited: new Set(visited),
       order,
+      previous: new Map(prev),
     });
 
     return { steps, order, visited };
@@ -582,10 +627,12 @@ export class MeshGraph {
 
       for (const nodeId of inMST) {
         const neighbors = this.getNeighbors(nodeId);
-        for (const { nodeId: neighbor, weight } of neighbors) {
-          if (!inMST.has(neighbor) && this.nodes.get(neighbor)?.data.status !== 'failed' && weight < minWeight) {
+        for (const neighbor of neighbors) {
+          const { nodeId: neighborId, edge } = neighbor;
+          const weight = edge ? edge.weight : neighbor.weight;
+          if (!inMST.has(neighborId) && this.nodes.get(neighborId)?.data.status !== 'failed' && weight < minWeight) {
             minWeight = weight;
-            minEdge = { source: nodeId, target: neighbor, weight };
+            minEdge = { source: nodeId, target: neighborId, weight };
           }
         }
       }
@@ -798,15 +845,30 @@ export function createDefaultMesh() {
     graph.addNode(node);
   }
 
-  // Mesh topology with varying weights (ms latency)
-  graph.addEdge('A', 'B', 12);
-  graph.addEdge('A', 'C', 18);
-  graph.addEdge('A', 'E', 15);
-  graph.addEdge('B', 'C', 10);
-  graph.addEdge('B', 'D', 22);
-  graph.addEdge('C', 'D', 14);
-  graph.addEdge('D', 'E', 16);
-  graph.addEdge('B', 'E', 20);
+  // Full mesh topology — complete K5 graph (all pairs connected)
+  // This lets routing algorithms compare direct routes vs multi-hop paths
+  const defaultEdges = [
+    ['A', 'B'],
+    ['A', 'C'],
+    ['A', 'D'],
+    ['A', 'E'],
+    ['B', 'C'],
+    ['B', 'D'],
+    ['B', 'E'],
+    ['C', 'D'],
+    ['C', 'E'],
+    ['D', 'E'],
+  ];
+
+  for (const [u, v] of defaultEdges) {
+    const n1 = graph.nodes.get(u);
+    const n2 = graph.nodes.get(v);
+    let weight = 12; // fallback default
+    if (n1 && n2 && n1.lat && n1.lon && n2.lat && n2.lon) {
+      weight = getHaversineDistance(n1.lat, n1.lon, n2.lat, n2.lon);
+    }
+    graph.addEdge(u, v, weight);
+  }
 
   return graph;
 }

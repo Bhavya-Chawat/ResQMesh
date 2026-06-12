@@ -23,9 +23,10 @@ function AppShell() {
   const navigate = useNavigate();
   const [graph] = useState(() => createDefaultMesh());
   const [sim] = useState(() => new SimulationEngine(graph));
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [theme] = useState('dark');
+  const [packetFlowActive, setPacketFlowActive] = useState(false);
   const bgCanvasRef = useRef(null);
 
   // Force re-render on simulation updates
@@ -305,7 +306,7 @@ function AppShell() {
 
   const isLanding = location.pathname === '/';
 
-  const ctx = { graph, sim, dataSourceManager, theme };
+  const ctx = { graph, sim, dataSourceManager, theme, tick, packetFlowActive, setPacketFlowActive };
 
   return (
     <AppContext.Provider value={ctx}>
@@ -337,18 +338,35 @@ function AppShell() {
               {/* Toggle Card */}
               <div className="header-card mode-toggle-card glass-panel">
                 <div 
-                  className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
-                  onClick={() => {
-                    dataSourceManager.toggle();
-                    setTick(t => t + 1);
-                  }}
-                  title="Toggle Simulation / Hardware mode"
+                  className={`segmented-control mode-${dataSourceManager.mode}`}
+                  title="Select system mode"
                 >
                   <div className="segmented-slider"></div>
-                  <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'simulation' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('simulation');
+                      setTick(t => t + 1);
+                    }}
+                  >
                     Simulation
                   </div>
-                  <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'online' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('online');
+                      setTick(t => t + 1);
+                    }}
+                  >
+                    Online
+                  </div>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'hardware' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('hardware');
+                      setTick(t => t + 1);
+                    }}
+                  >
                     Hardware
                   </div>
                 </div>
@@ -378,18 +396,35 @@ function AppShell() {
               {/* Mobile Mode Toggle */}
               <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px' }}>
                 <div 
-                  className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
-                  onClick={() => {
-                    dataSourceManager.toggle();
-                    setTick(t => t + 1);
-                  }}
+                  className={`segmented-control mode-${dataSourceManager.mode}`}
                   style={{ width: '100%' }}
                 >
                   <div className="segmented-slider"></div>
-                  <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'simulation' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('simulation');
+                      setTick(t => t + 1);
+                    }}
+                  >
                     Simulation
                   </div>
-                  <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'online' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('online');
+                      setTick(t => t + 1);
+                    }}
+                  >
+                    Online
+                  </div>
+                  <div 
+                    className={`segmented-option ${dataSourceManager.mode === 'hardware' ? 'active' : ''}`}
+                    onClick={() => {
+                      dataSourceManager.setMode('hardware');
+                      setTick(t => t + 1);
+                    }}
+                  >
                     Hardware
                   </div>
                 </div>

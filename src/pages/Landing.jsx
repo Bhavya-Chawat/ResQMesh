@@ -32,18 +32,35 @@ export default function Landing() {
           {/* Toggle Card */}
           <div className="header-card mode-toggle-card glass-panel">
             <div 
-              className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
-              onClick={() => {
-                dataSourceManager.toggle();
-                setTick(t => t + 1);
-              }}
-              title="Toggle Simulation / Hardware mode"
+              className={`segmented-control mode-${dataSourceManager.mode}`}
+              title="Select system mode"
             >
               <div className="segmented-slider"></div>
-              <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'simulation' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('simulation');
+                  setTick(t => t + 1);
+                }}
+              >
                 Simulation
               </div>
-              <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'online' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('online');
+                  setTick(t => t + 1);
+                }}
+              >
+                Online
+              </div>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'hardware' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('hardware');
+                  setTick(t => t + 1);
+                }}
+              >
                 Hardware
               </div>
             </div>
@@ -73,18 +90,35 @@ export default function Landing() {
           {/* Mobile Mode Toggle */}
           <div style={{ marginTop: '8px', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px', width: '100%' }}>
             <div 
-              className={`segmented-control ${dataSourceManager.isHardware ? 'hardware-active' : ''}`}
-              onClick={() => {
-                dataSourceManager.toggle();
-                setTick(t => t + 1);
-              }}
+              className={`segmented-control mode-${dataSourceManager.mode}`}
               style={{ width: '100%' }}
             >
               <div className="segmented-slider"></div>
-              <div className={`segmented-option ${!dataSourceManager.isHardware ? 'active' : ''}`}>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'simulation' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('simulation');
+                  setTick(t => t + 1);
+                }}
+              >
                 Simulation
               </div>
-              <div className={`segmented-option ${dataSourceManager.isHardware ? 'active' : ''}`}>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'online' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('online');
+                  setTick(t => t + 1);
+                }}
+              >
+                Online
+              </div>
+              <div 
+                className={`segmented-option ${dataSourceManager.mode === 'hardware' ? 'active' : ''}`}
+                onClick={() => {
+                  dataSourceManager.setMode('hardware');
+                  setTick(t => t + 1);
+                }}
+              >
                 Hardware
               </div>
             </div>

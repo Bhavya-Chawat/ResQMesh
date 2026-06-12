@@ -76,6 +76,10 @@ export function applyNodeUpdate(graphNode, backendNode) {
 
   // Label
   if (backendNode.label) graphNode.label = backendNode.label;
+
+  // Sync GPS Coordinates from Backend
+  if (backendNode.lat !== undefined) graphNode.lat = Number(backendNode.lat);
+  if (backendNode.lon !== undefined) graphNode.lon = Number(backendNode.lon);
 }
 
 // ── Topology snapshot → MeshGraph ────────────────────────────────────────────
@@ -125,6 +129,17 @@ export function applyTopologySnapshot(graph, snapshot, sim) {
     if (existing) {
       existing.weight = Number(be.weight) || existing.weight;
       Object.assign(existing.data, be.data || {});
+      // Sync primitive weight inside adjacencyList
+      const srcAdj = graph.adjacencyList.get(src);
+      if (srcAdj) {
+        const entry = srcAdj.find(n => n.nodeId === tgt);
+        if (entry) entry.weight = existing.weight;
+      }
+      const tgtAdj = graph.adjacencyList.get(tgt);
+      if (tgtAdj) {
+        const entry = tgtAdj.find(n => n.nodeId === src);
+        if (entry) entry.weight = existing.weight;
+      }
     } else {
       graph.addEdge(src, tgt, Number(be.weight) || 2);
     }

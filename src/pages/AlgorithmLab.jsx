@@ -1,14 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useApp } from '../App';
 
-// Convert normalized (0-1) node coords → canvas pixels
-function nPos(node, w, h, pad = 50) {
-  return {
-    x: pad + node.nx * (w - 2 * pad),
-    y: pad + node.ny * (h - 2 * pad),
-  };
-}
-
 const ALGORITHMS = {
   dijkstra: {
     name: 'Dijkstra',
@@ -143,10 +135,26 @@ const ALGORITHMS = {
   },
 };
 
+// Convert normalized (0-1) node coords → canvas pixels
+function nPos(node, w, h, pad = 50) {
+  return {
+    x: pad + node.nx * (w - 2 * pad),
+    y: pad + node.ny * (h - 2 * pad),
+  };
+}
+
 export default function AlgorithmLab() {
-  const { graph, sim } = useApp();
+  const { graph, sim, dataSourceManager, tick } = useApp();
+  const mapRef = useRef(null);
+  const mapDivRef = useRef(null);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const polylinesRef = useRef([]);
+  const weightLabelsRef = useRef([]);
+  const tspPathPolylineRef = useRef(null);
+  const [radarLayer, setRadarLayer] = useState(null);
+
   const [activeAlgo, setActiveAlgo] = useState('dijkstra');
   const [sourceNode, setSourceNode] = useState('A');
   const [steps, setSteps] = useState([]);
@@ -154,23 +162,30 @@ export default function AlgorithmLab() {
   const [isRunning, setIsRunning] = useState(false);
   const [highlightData, setHighlightData] = useState(null);
   const intervalRef = useRef(null);
-
-  const highlightDataRef = useRef(highlightData);
-  useEffect(() => {
-    highlightDataRef.current = highlightData;
-  }, [highlightData]);
+  // Global tick handles updates for both simulation and hardware modes
 
   const algo = ALGORITHMS[activeAlgo];
-  const nodeIds = Array.from(graph.nodes.keys());
+
+  const isNodeOnline = useCallback((n) => {
+    if (dataSourceManager?.mode === 'hardware' || dataSourceManager?.mode === 'online') {
+      return n.data.status !== 'failed';
+    }
+    return true;
+  }, [dataSourceManager?.mode]);
+
+  const nodeIds = Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)));
+  const effectiveSourceNode = graph.nodes.has(sourceNode) && isNodeOnline(graph.nodes.get(sourceNode)) 
+    ? sourceNode 
+    : (nodeIds[0] || 'A');
 
   // Run algorithm
   const runAlgorithm = useCallback(() => {
     let result;
     switch (activeAlgo) {
-      case 'dijkstra': result = graph.dijkstra(sourceNode); break;
-      case 'bellmanford': result = graph.bellmanFord(sourceNode); break;
-      case 'bfs': result = graph.bfs(sourceNode); break;
-      case 'dfs': result = graph.dfs(sourceNode); break;
+      case 'dijkstra': result = graph.dijkstra(effectiveSourceNode); break;
+      case 'bellmanford': result = graph.bellmanFord(effectiveSourceNode); break;
+      case 'bfs': result = graph.bfs(effectiveSourceNode); break;
+      case 'dfs': result = graph.dfs(effectiveSourceNode); break;
       case 'prim': result = graph.primMST(); break;
       case 'tsp': result = graph.tspBranchAndBound(nodeIds.slice(0, Math.min(nodeIds.length, 6))); break;
       default: return;
@@ -178,8 +193,8 @@ export default function AlgorithmLab() {
     setSteps(result.steps);
     setCurrentStep(0);
     setIsRunning(true);
-    sim.eventLog.add('algorithm', `Running ${algo.name} from ${sourceNode}`);
-  }, [activeAlgo, sourceNode, graph, nodeIds, algo.name, sim]);
+    sim.eventLog.add('algorithm', `Running ${algo.name} from ${effectiveSourceNode}`);
+  }, [activeAlgo, effectiveSourceNode, graph, nodeIds, algo.name, sim]);
 
   // Step through
   useEffect(() => {
@@ -223,8 +238,323 @@ export default function AlgorithmLab() {
     if (currentStep > 0) setCurrentStep(s => s - 1);
   };
 
-  // Canvas rendering for algorithm visualization
+  // Fetch RainViewer radar layer timestamp
   useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.radar && data.radar.past && data.radar.past.length > 0) {
+          const latest = data.radar.past[data.radar.past.length - 1].time;
+          setRadarLayer(`https://tilecache.rainviewer.com/v2/radar/${latest}/256/{z}/{x}/{y}/2/1_1.png`);
+        }
+      })
+      .catch(err => console.error("Error fetching radar timestamp:", err));
+  }, [dataSourceManager?.mode]);
+
+  // Initialize Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      return;
+    }
+    if (!mapDivRef.current || mapRef.current) return;
+
+    const L = window.L;
+    if (!L) return;
+
+    const map = L.map(mapDivRef.current, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([12.9716, 77.5946], 12); // Centered on Bangalore
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [dataSourceManager?.mode]);
+
+  // Sync radar layer
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L || !radarLayer) return;
+
+    const layer = L.tileLayer(radarLayer, {
+      opacity: 0.45,
+      zIndex: 10,
+      maxNativeZoom: 7
+    }).addTo(map);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [radarLayer, dataSourceManager?.mode]);
+
+  // Sync nodes, links, and algorithm execution states on Leaflet Map
+  useEffect(() => {
+    if (dataSourceManager?.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    // 1. Remove old polylines and weight labels
+    for (const pl of polylinesRef.current) {
+      map.removeLayer(pl);
+    }
+    polylinesRef.current = [];
+
+    for (const lbl of weightLabelsRef.current) {
+      map.removeLayer(lbl);
+    }
+    weightLabelsRef.current = [];
+
+    if (tspPathPolylineRef.current) {
+      map.removeLayer(tspPathPolylineRef.current);
+      tspPathPolylineRef.current = null;
+    }
+
+    const step = (() => {
+      if (highlightData) return highlightData;
+
+      // If not currently running/animating, compute the final state of the algorithm to show actual routing
+      try {
+        let result;
+        switch (activeAlgo) {
+          case 'dijkstra': result = graph.dijkstra(effectiveSourceNode); break;
+          case 'bellmanford': result = graph.bellmanFord(effectiveSourceNode); break;
+          case 'bfs': result = graph.bfs(effectiveSourceNode); break;
+          case 'dfs': result = graph.dfs(effectiveSourceNode); break;
+          case 'prim': result = graph.primMST(); break;
+          case 'tsp': result = graph.tspBranchAndBound(nodeIds.slice(0, Math.min(nodeIds.length, 6))); break;
+          default: return null;
+        }
+        if (result && result.steps && result.steps.length > 0) {
+          return {
+            ...result.steps[result.steps.length - 1],
+            isDefaultRouting: true
+          };
+        }
+      } catch (e) {
+        console.error("Error computing default routing for map:", e);
+      }
+      return null;
+    })();
+
+    const visitedSet = step?.visited || step?.inMST || new Set();
+    const relaxEdge = step?.relaxEdge;
+    const mstEdges = step?.mstEdges || [];
+    const tspPath = step?.path || step?.bestPath;
+
+    // 2. Draw edges
+    for (const edge of graph.edges) {
+      const src = graph.nodes.get(edge.source);
+      const tgt = graph.nodes.get(edge.target);
+      if (!src || !tgt) continue;
+
+      let isRelax = relaxEdge && (
+        (relaxEdge.source === edge.source && relaxEdge.target === edge.target) ||
+        (relaxEdge.source === edge.target && relaxEdge.target === edge.source)
+      );
+      let isMST = mstEdges.some(me =>
+        (me.source === edge.source && me.target === edge.target) ||
+        (me.source === edge.target && me.target === edge.source)
+      );
+      
+      let isTreeEdge = false;
+      if (step?.previous) {
+        const p1 = step.previous.get(edge.source);
+        const p2 = step.previous.get(edge.target);
+        if (p1 === edge.target || p2 === edge.source) {
+          isTreeEdge = true;
+        }
+      }
+
+      let color = 'rgba(11, 18, 32, 0.2)';
+      let weight = 1.5;
+      let opacity = 0.45;
+      let dashArray = null;
+
+      if (isRelax) {
+        color = '#FF653F';
+        weight = 3.5;
+        opacity = 0.95;
+      } else if (isMST || isTreeEdge) {
+        color = '#16a34a';
+        weight = 3.5;
+        opacity = 0.9;
+      }
+
+      const polyline = L.polyline([[src.lat, src.lon], [tgt.lat, tgt.lon]], {
+        color,
+        weight,
+        opacity,
+        dashArray
+      }).addTo(map);
+      polylinesRef.current.push(polyline);
+
+      // Label at midpoint
+      const midLat = (src.lat + tgt.lat) / 2;
+      const midLon = (src.lon + tgt.lon) / 2;
+      const labelColor = isRelax ? '#FF653F' : (isMST || isTreeEdge) ? '#16a34a' : 'rgba(11,18,32,0.6)';
+      const labelWeight = isRelax || isMST || isTreeEdge ? 'bold' : 'normal';
+
+      const labelMarker = L.marker([midLat, midLon], {
+        icon: L.divIcon({
+          html: `<div style="font-family: var(--font-mono); font-size: 0.65rem; color: ${labelColor}; text-align: center; white-space: nowrap; font-weight: ${labelWeight}">${edge.weight.toFixed(1)} km</div>`,
+          className: 'edge-weight-label',
+          iconSize: [40, 12],
+          iconAnchor: [20, 6]
+        }),
+        interactive: false
+      }).addTo(map);
+      weightLabelsRef.current.push(labelMarker);
+    }
+
+    // 3. Draw TSP Path overlay
+    if (tspPath && tspPath.length > 1) {
+      const pathCoords = tspPath.map(id => {
+        const node = graph.nodes.get(id);
+        return [node.lat, node.lon];
+      });
+      if (step?.type === 'complete' || step?.type === 'newBest' || step?.isDefaultRouting) {
+        const startNode = graph.nodes.get(tspPath[0]);
+        pathCoords.push([startNode.lat, startNode.lon]);
+      }
+      const tspPolyline = L.polyline(pathCoords, {
+        color: '#FF653F',
+        weight: 3.5,
+        dashArray: '6, 4',
+        opacity: 0.9,
+        zIndexOffset: 200
+      }).addTo(map);
+      tspPathPolylineRef.current = tspPolyline;
+    }
+
+      // 4. Render/Update nodes
+      const currentIds = new Set(
+        Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)))
+      );
+      for (const [id, marker] of markersRef.current.entries()) {
+        if (!currentIds.has(id)) {
+          map.removeLayer(marker);
+          markersRef.current.delete(id);
+        }
+      }
+
+      for (const [id, node] of graph.nodes.entries()) {
+        if (!isNodeOnline(node)) continue;
+        let marker = markersRef.current.get(id);
+        const isVisited = visitedSet.has(id);
+        const isCurrent = step?.isDefaultRouting
+          ? (['dijkstra', 'bellmanford', 'bfs', 'dfs'].includes(activeAlgo) && id === effectiveSourceNode)
+          : (step?.current === id);
+        const isDiscovered = step?.discovered === id;
+
+        const size = isCurrent ? 14 : 10;
+        let color = '#448AFF'; // unvisited (blue)
+        if (isCurrent) color = '#FF653F'; // red-orange
+        else if (isDiscovered) color = '#FFC85C'; // yellow
+        else if (isVisited) color = '#16a34a'; // green
+
+        let distText = '';
+        if (step?.distances) {
+          const dist = step.distances.get(id);
+          distText = dist === Infinity ? '∞' : dist.toFixed(1);
+        }
+
+        const markerHtml = `
+          <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+            <!-- Node Label -->
+            <div style="
+              font-family: var(--font-mono);
+              font-size: 0.65rem;
+              font-weight: bold;
+              color: #ffffff;
+              background: rgba(0,0,0,0.65);
+              padding: 2px 6px;
+              border-radius: 3px;
+              margin-bottom: 2px;
+              white-space: nowrap;
+              border: 1px solid ${isCurrent ? '#FF653F' : 'rgba(255,255,255,0.1)'};
+            ">
+              ${node.label}
+            </div>
+            
+            <!-- Distance Badge -->
+            ${distText ? `
+              <div style="
+                font-family: var(--font-mono);
+                font-size: 0.6rem;
+                color: #FFC85C;
+                background: rgba(0,0,0,0.8);
+                padding: 1px 4px;
+                border-radius: 2px;
+                margin-bottom: 2px;
+                white-space: nowrap;
+                border: 1px solid rgba(255, 200, 92, 0.2);
+              ">
+                dist: ${distText} km
+              </div>
+            ` : ''}
+
+            <!-- Circle & Sonar -->
+            <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+              ${isCurrent ? '<div class="sonar-pulse-ring" style="border-color:#FF653F;"></div>' : ''}
+              <div style="
+                width: ${size}px;
+                height: ${size}px;
+                background-color: ${color};
+                border-radius: 50%;
+                border: 2px solid #ffffff;
+                box-shadow: 0 0 10px ${color};
+              "></div>
+            </div>
+          </div>
+        `;
+
+        const markerOptions = {
+          icon: L.divIcon({
+            html: markerHtml,
+            className: 'algo-node-icon',
+            iconSize: [80, 80],
+            iconAnchor: [40, 50]
+          }),
+          zIndexOffset: isCurrent ? 1000 : isDiscovered ? 500 : 0
+        };
+
+        if (!marker) {
+          marker = L.marker([node.lat, node.lon], markerOptions).addTo(map);
+          marker.on('click', () => {
+            setSourceNode(id);
+          });
+          markersRef.current.set(id, marker);
+        } else {
+          marker.setLatLng([node.lat, node.lon]);
+          marker.setIcon(markerOptions.icon);
+          marker.setZIndexOffset(isCurrent ? 1000 : isDiscovered ? 500 : 0);
+          if (!map.hasLayer(marker)) {
+            marker.addTo(map);
+          }
+        }
+      }
+  }, [graph, highlightData, activeAlgo, effectiveSourceNode, dataSourceManager?.mode, tick]);
+
+  // Canvas rendering loop for Simulation Mode
+  useEffect(() => {
+    if (dataSourceManager?.mode !== 'simulation') return;
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) return;
@@ -246,48 +576,16 @@ export default function AlgorithmLab() {
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // ── Canvas background grid ──
-      const GRID = 55;
-      // Vertical grid lines (chartreuse)
-      ctx.strokeStyle = 'rgba(201,255,0,0.18)';
-      ctx.lineWidth = 0.8;
-      for (let x = 0; x < w; x += GRID) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      }
-      // Horizontal grid lines (cyan)
-      ctx.strokeStyle = 'rgba(0,229,255,0.13)';
-      for (let y = 0; y < h; y += GRID) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-      }
-      // Intersection dot markers
-      ctx.fillStyle = 'rgba(201,255,0,0.32)';
-      for (let x = 0; x < w; x += GRID) {
-        for (let y = 0; y < h; y += GRID) {
-          ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
-        }
-      }
-      // Corner brackets
-      const bS = 22;
-      ctx.strokeStyle = 'rgba(201,255,0,0.45)';
-      ctx.lineWidth = 1.5;
-      [[0,0,1,1],[w,0,-1,1],[0,h,1,-1],[w,h,-1,-1]].forEach(([bx,by,sx,sy]) => {
-        ctx.beginPath();
-        ctx.moveTo(bx + sx*bS, by); ctx.lineTo(bx, by); ctx.lineTo(bx, by + sy*bS);
-        ctx.stroke();
-      });
-      // Center crosshair
-      ctx.strokeStyle = 'rgba(0,229,255,0.1)';
-      ctx.lineWidth = 0.6;
-      ctx.setLineDash([3, 6]);
-      ctx.beginPath(); ctx.moveTo(w/2, 0); ctx.lineTo(w/2, h); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke();
-      ctx.setLineDash([]);
+      // Grid
+      ctx.strokeStyle = 'rgba(255,101,63,0.03)';
+      for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
 
-      const step = highlightDataRef.current;
+      const step = highlightData;
       const visitedSet = step?.visited || step?.inMST || new Set();
       const relaxEdge = step?.relaxEdge;
       const mstEdges = step?.mstEdges || [];
-      const tspPath = step?.path;
+      const tspPath = step?.path || step?.bestPath;
 
       const PAD = 50;
 
@@ -412,7 +710,7 @@ export default function AlgorithmLab() {
     }
     draw();
     return () => { cancelAnimationFrame(animId); ro.disconnect(); };
-  }, [graph]);
+  }, [graph, highlightData, dataSourceManager?.mode]);
 
   return (
     <div className="page-container animate-fade-in" style={{ padding: '24px 40px', width: '100%', boxSizing: 'border-box' }}>
@@ -441,7 +739,7 @@ export default function AlgorithmLab() {
               Source:
             </label>
             <select
-              value={sourceNode}
+              value={graph.nodes.has(sourceNode) ? sourceNode : effectiveSourceNode}
               onChange={e => setSourceNode(e.target.value)}
               style={{
                 fontFamily: 'var(--font-mono)', fontSize: '0.75rem', background: 'rgba(10,6,24,0.6)',
@@ -471,8 +769,43 @@ export default function AlgorithmLab() {
             </div>
           )}
 
-          <div ref={containerRef} style={{ height: '680px', position: 'relative', marginTop: 8 }}>
-            <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
+          <div ref={containerRef} style={{ height: '680px', position: 'relative', marginTop: 8, borderRadius: '8px', overflow: 'hidden', border: '1px solid rgba(255, 255, 255, 0.03)' }}>
+            {dataSourceManager?.mode === 'simulation' ? (
+              <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block', background: '#05020f' }} />
+            ) : (
+              <>
+                <div ref={mapDivRef} style={{ width: '100%', height: '100%', minHeight: '600px', background: '#05020f' }} />
+
+                {/* Floating Legend Overlay */}
+                <div style={{
+                  position: 'absolute',
+                  top: '12px',
+                  left: '12px',
+                  background: 'rgba(6,10,21,0.85)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  borderRadius: '8px',
+                  padding: '10px 14px',
+                  backdropFilter: 'blur(10px)',
+                  zIndex: 500,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '4px', fontWeight: 'bold' }}>Color Legend</div>
+                  {[
+                    { color: '#FF653F', label: 'Current Node / Step' },
+                    { color: '#16a34a', label: 'Visited / MST edge' },
+                    { color: '#FFC85C', label: 'Discovered / Relaxing edge' },
+                    { color: '#448AFF', label: 'Unvisited' }
+                  ].map(item => (
+                    <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.68rem', fontFamily: 'var(--font-mono)' }}>
+                      <div style={{ width: '8px', height: '8px', background: item.color, borderRadius: '2px', boxShadow: `0 0 6px ${item.color}` }} />
+                      <span style={{ color: '#ffffff' }}>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 

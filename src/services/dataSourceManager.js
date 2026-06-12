@@ -58,6 +58,7 @@ class DataSourceManager {
 
   get mode() { return this._mode; }
   get isHardware() { return this._mode === 'hardware'; }
+  get isOnline() { return this._mode === 'online'; }
   get isSimulation() { return this._mode === 'simulation'; }
   get connectionStatus() { return this._connectionStatus; }
 
@@ -74,22 +75,28 @@ class DataSourceManager {
     this._sim    = sim;
     this._notify = notifyFn;
 
-    if (this._mode === 'hardware') {
+    if (this._mode === 'hardware' || this._mode === 'online') {
       this._startHardwareMode();
     } else {
       this._startSimulationMode();
     }
+
+    fetch('/api/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: this._mode })
+    }).catch(err => console.error("Error setting backend mode:", err));
   }
 
   // ── Mode switching ───────────────────────────────────────────────────
 
   /**
-   * @param {'simulation'|'hardware'} newMode
+   * @param {'simulation'|'online'|'hardware'} newMode
    */
   setMode(newMode) {
     if (newMode === this._mode) return;
 
-    if (this._mode === 'hardware') {
+    if (this._mode === 'hardware' || this._mode === 'online') {
       this._stopHardwareMode();
     } else {
       this._stopSimulationMode();
@@ -97,17 +104,25 @@ class DataSourceManager {
 
     this._mode = newMode;
 
-    if (newMode === 'hardware') {
+    if (newMode === 'hardware' || newMode === 'online') {
       this._startHardwareMode();
     } else {
       this._startSimulationMode();
     }
 
+    fetch('/api/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: newMode })
+    }).catch(err => console.error("Error setting backend mode:", err));
+
     this._notify?.();
   }
 
   toggle() {
-    this.setMode(this._mode === 'simulation' ? 'hardware' : 'simulation');
+    if (this._mode === 'simulation') this.setMode('online');
+    else if (this._mode === 'online') this.setMode('hardware');
+    else this.setMode('simulation');
   }
 
   // ── Simulation mode ──────────────────────────────────────────────────
@@ -206,12 +221,29 @@ class DataSourceManager {
       };
     }
 
-    // Clear current graph nodes and edges so hardware mode starts with 0 nodes until detected in real-time
+    // Retain baseline default graph nodes and edges so hardware mode starts with a functional grid,
+    // but initialize all sensor metrics to null (N/A) until real live data is received.
     if (this._graph) {
       this._graph.isHardware = true;
-      this._graph.nodes.clear();
-      this._graph.edges = [];
-      this._graph.adjacencyList.clear();
+      if (this._mode === 'hardware') {
+        // HARDWARE mode: clear all nodes/edges — they appear ONLY when real ESP32 MQTT messages arrive
+        this._graph.nodes.clear();
+        this._graph.edges = [];
+        this._graph.adjacencyList.clear();
+      } else {
+        // ONLINE mode: keep the default 5 nodes (with Bangalore GPS coords), just null sensor readings
+        // Live sensor data will flow in from the backend Open-Meteo integration
+        for (const [, node] of this._graph.nodes) {
+          node.data.temperature = null;
+          node.data.humidity = null;
+          node.data.gasLevel = null;
+          node.data.battery = null;
+          node.data.rssi = null;
+          node.data.latency = null;
+          node.data.throughput = null;
+          node.data.signalQuality = null;
+        }
+      }
     }
 
     // Reset pending buffers
@@ -252,7 +284,6 @@ class DataSourceManager {
       }),
 
       websocketService.on('topology_update', (data) => {
-        if (sim && !sim.isRunning) return;
         // Buffer visual topology structure
         this._pendingTopologySnapshot = data;
 
@@ -274,8 +305,6 @@ class DataSourceManager {
       }),
 
       websocketService.on('node_update', (event) => {
-        if (sim && !sim.isRunning) return;
-        
         const nodeId = String(event.nodeId);
         let existing = graph.nodes.get(nodeId);
 
@@ -301,12 +330,10 @@ class DataSourceManager {
       }),
 
       websocketService.on('heartbeat', (event) => {
-        if (sim && !sim.isRunning) return;
         notify?.();
       }),
 
       websocketService.on('node_failure', (event) => {
-        if (sim && !sim.isRunning) return;
         if (event?.nodeId) {
           this._pendingNodeFailures.add(String(event.nodeId));
           sim?.eventLog?.add('critical', event.message || `NODE FAILURE: ${event.nodeId}`);
@@ -315,13 +342,11 @@ class DataSourceManager {
       }),
 
       websocketService.on('alert', (event) => {
-        if (sim && !sim.isRunning) return;
         handleAlert(graph, event, sim);
         notify?.();
       }),
 
       websocketService.on('stats_update', (statsPayload) => {
-        if (sim && !sim.isRunning) return;
         applyStatsUpdate(sim, statsPayload);
         notify?.();
       }),

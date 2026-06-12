@@ -982,7 +982,7 @@
   padding: 2px;
   cursor: pointer;
   user-select: none;
-  width: 250px;
+  width: 320px;
   height: 34px;
 }
 .theme-light .segmented-control {
@@ -995,7 +995,7 @@
   justify-content: center;
   align-items: center;
   font-family: var(--font-display) !important;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: var(--text-muted);
   z-index: 2;
@@ -1014,14 +1014,20 @@
   top: 2px;
   bottom: 2px;
   left: 2px;
-  width: calc(50% - 2px);
+  width: calc(33.33% - 2px);
   background: var(--nash-chartreuse);
   border-radius: 28px;
   z-index: 1;
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
-.segmented-control.hardware-active .segmented-slider {
+.segmented-control.mode-simulation .segmented-slider {
+  transform: translateX(0);
+}
+.segmented-control.mode-online .segmented-slider {
   transform: translateX(100%);
+}
+.segmented-control.mode-hardware .segmented-slider {
+  transform: translateX(200%);
 }
 
 /* ========== REPORTS DASHBOARD ========== */
@@ -1152,6 +1158,44 @@
   .reports-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Custom Leaflet Dark Tooltip styling to match the Nash.ai Cybernetic UI */
+.leaflet-dark-tooltip {
+  background: rgba(11, 18, 32, 0.9) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(201, 255, 0, 0.4) !important;
+  border-radius: 6px !important;
+  color: #ffffff !important;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5) !important;
+  font-family: 'Geist Mono', monospace !important;
+}
+.leaflet-dark-tooltip::before {
+  border-top-color: rgba(11, 18, 32, 0.9) !important;
+  border-bottom-color: rgba(11, 18, 32, 0.9) !important;
+  border-left-color: rgba(11, 18, 32, 0.9) !important;
+  border-right-color: rgba(11, 18, 32, 0.9) !important;
+}
+
+@keyframes sonarPulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+.sonar-pulse-ring {
+  width: 44px;
+  height: 44px;
+  border: 2px solid #FF1744;
+  border-radius: 50%;
+  position: absolute;
+  animation: sonarPulse 2s infinite linear;
+  pointer-events: none;
 }
 
 

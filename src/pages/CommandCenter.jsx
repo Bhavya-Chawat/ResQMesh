@@ -11,11 +11,18 @@ function nodePos(node, w, h, pad = 55) {
 }
 
 export default function CommandCenter() {
-  const { graph, sim, dataSourceManager, theme } = useApp();
+  const { graph, sim, dataSourceManager, theme, tick, packetFlowActive, setPacketFlowActive } = useApp();
+  const mapRef = useRef(null);
+  const mapDivRef = useRef(null);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const markersRef = useRef(new Map());
+  const polylinesRef = useRef([]);
+  const packetMarkersRef = useRef(new Map());
+  const [radarLayer, setRadarLayer] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [tick, setTick] = useState(0);
+  const selectedNodeRef = useRef(selectedNode);
+  useEffect(() => { selectedNodeRef.current = selectedNode; }, [selectedNode]);
   const dragRef = useRef(null);
   const animRef = useRef(null);
   const timeRef = useRef(0);
@@ -29,11 +36,499 @@ export default function CommandCenter() {
   const [tableData, setTableData] = useState([]);
   const [simSpeed, setSimSpeed] = useState(1);
 
+  // Fetch RainViewer radar layer timestamp
+  useEffect(() => {
+    if (dataSourceManager.mode === 'simulation') return;
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.radar && data.radar.past && data.radar.past.length > 0) {
+          const latest = data.radar.past[data.radar.past.length - 1].time;
+          setRadarLayer(`https://tilecache.rainviewer.com/v2/radar/${latest}/256/{z}/{x}/{y}/2/1_1.png`);
+        }
+      })
+      .catch(err => console.error("Error fetching radar timestamp:", err));
+  }, [dataSourceManager.mode]);
+
+  // Initialize Map
+  useEffect(() => {
+    if (dataSourceManager.mode === 'simulation') {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      return;
+    }
+    if (!mapDivRef.current || mapRef.current) return;
+
+    const L = window.L;
+    if (!L) return;
+
+    const map = L.map(mapDivRef.current, {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([12.9716, 77.5946], 12); // Centered on Bangalore
+
+    // CartoDB Positron tileset
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [dataSourceManager.mode]);
+
+  // Sync radar layer
+  useEffect(() => {
+    if (dataSourceManager.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L || !radarLayer) return;
+
+    const layer = L.tileLayer(radarLayer, {
+      opacity: 0.45,
+      zIndex: 10,
+      maxNativeZoom: 7
+    }).addTo(map);
+
+    return () => {
+      map.removeLayer(layer);
+    };
+  }, [radarLayer, dataSourceManager.mode]);
+
+  // Sync graph state on Leaflet Map
+  useEffect(() => {
+    if (dataSourceManager.mode === 'simulation') return;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    const isNodeOnline = (n) => {
+      if (dataSourceManager.mode === 'hardware' || dataSourceManager.mode === 'online') {
+        return n.data.status !== 'failed';
+      }
+      return true;
+    };
+
+    // 1. Remove old polylines
+    for (const pl of polylinesRef.current) {
+      map.removeLayer(pl);
+    }
+    polylinesRef.current = [];
+
+    // 2. Render Edges (Polylines)
+    for (const edge of graph.edges) {
+      const src = graph.nodes.get(edge.source);
+      const tgt = graph.nodes.get(edge.target);
+      if (!src || !tgt) continue;
+      if (!isNodeOnline(src) || !isNodeOnline(tgt)) continue;
+
+      const failed = src.data.status === 'failed' || tgt.data.status === 'failed';
+      const color = failed ? '#ff1744' : '#16a34a';
+      const options = {
+        color: color,
+        weight: 1.5,
+        dashArray: '5, 5',
+        opacity: failed ? 0.35 : 0.75
+      };
+
+      const polyline = L.polyline([[src.lat, src.lon], [tgt.lat, tgt.lon]], options).addTo(map);
+      polylinesRef.current.push(polyline);
+    }
+
+    // 3. Render/Update Nodes (Markers)
+    const currentIds = new Set(
+      Array.from(graph.nodes.keys()).filter(id => isNodeOnline(graph.nodes.get(id)))
+    );
+    
+    // Remove markers for deleted or offline nodes
+    for (const [id, marker] of markersRef.current.entries()) {
+      if (!currentIds.has(id)) {
+        map.removeLayer(marker);
+        markersRef.current.delete(id);
+      }
+    }
+
+    // Render/Update nodes A-E
+    for (const [id, node] of graph.nodes.entries()) {
+      if (!isNodeOnline(node)) continue;
+      let marker = markersRef.current.get(id);
+      const isFailed = node.data.status === 'failed';
+      const isSelected = id === selectedNode;
+      const size = isSelected ? 14 : 10;
+      const color = '#FF653F'; // bright orange circles
+      
+      const markerHtml = `
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+          <!-- Node Label -->
+          <div style="
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            font-weight: bold;
+            color: #ffffff;
+            background: rgba(0,0,0,0.65);
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-bottom: 2px;
+            white-space: nowrap;
+            border: 1px solid ${isSelected ? '#ffffff' : 'rgba(255,255,255,0.1)'};
+          ">
+            ${node.label}
+          </div>
+
+          <!-- Circle & Sonar -->
+          <div style="position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;">
+            ${isSelected ? '<div class="sonar-pulse-ring" style="border-color:#ffffff;"></div>' : ''}
+            ${isFailed ? '<div class="sonar-pulse-ring" style="border-color:#ff1744; animation-duration: 1.5s;"></div>' : ''}
+            <div style="
+              width: ${size}px;
+              height: ${size}px;
+              background-color: ${color};
+              border-radius: 50%;
+              border: 2px solid #ffffff;
+              box-shadow: 0 0 10px ${color};
+            "></div>
+          </div>
+        </div>
+      `;
+
+      const markerOptions = {
+        icon: L.divIcon({
+          html: markerHtml,
+          className: 'command-node-icon',
+          iconSize: [80, 80],
+          iconAnchor: [40, 50]
+        }),
+        zIndexOffset: isSelected ? 1000 : 0
+      };
+
+      if (!marker) {
+        marker = L.marker([node.lat, node.lon], markerOptions).addTo(map);
+        marker.on('click', () => {
+          setSelectedNode(id);
+        });
+        markersRef.current.set(id, marker);
+      } else {
+        marker.setLatLng([node.lat, node.lon]);
+        marker.setIcon(markerOptions.icon);
+        marker.setZIndexOffset(isSelected ? 1000 : 0);
+        if (!map.hasLayer(marker)) {
+          marker.addTo(map);
+        }
+      }
+
+      let weatherInfo = '';
+      if (id === 'A') {
+        weatherInfo = `Wind: <b>${node.data.gasLevel !== null && node.data.gasLevel !== undefined ? node.data.gasLevel.toFixed(1) : 'N/A'} km/h</b>`;
+      } else if (id === 'B') {
+        weatherInfo = `Rain: <b>${node.data.gasLevel !== null && node.data.gasLevel !== undefined ? node.data.gasLevel.toFixed(1) : 'N/A'} mm</b>`;
+      } else if (id === 'E') {
+        weatherInfo = `CO: <b>${node.data.gasLevel !== null && node.data.gasLevel !== undefined ? node.data.gasLevel.toFixed(0) : 'N/A'} ppm</b>`;
+      } else {
+        weatherInfo = `Env: <b>Safe</b>`;
+      }
+
+      const tooltipContent = `
+        <div style="font-family: var(--font-mono); font-size: 0.75rem; color: #ffffff; padding: 4px;">
+          <strong style="color: var(--nash-chartreuse);">${node.label}</strong> [Node ${id}]<br/>
+          Temp: <b>${node.data.temperature !== null && node.data.temperature !== undefined ? `${node.data.temperature.toFixed(1)}°C` : 'N/A'}</b><br/>
+          Hum: <b>${node.data.humidity !== null && node.data.humidity !== undefined ? `${node.data.humidity.toFixed(1)}%` : 'N/A'}</b><br/>
+          ${weatherInfo}<br/>
+          Status: <b style="color: ${color};">${node.data.status.toUpperCase()}</b>
+        </div>
+      `;
+      marker.bindTooltip(tooltipContent, {
+        direction: 'top',
+        className: 'leaflet-dark-tooltip',
+        opacity: 0.9,
+        permanent: false
+      });
+    }
+  }, [graph, selectedNode, dataSourceManager.mode, tick]);
+
+  // Packet flow animation loop on Leaflet Map — only runs when packetFlowActive
+  useEffect(() => {
+    if (dataSourceManager.mode === 'simulation') return;
+    if (!packetFlowActive) {
+      // Clean up any existing packet markers when flow is stopped
+      for (const m of packetMarkersRef.current.values()) {
+        const map = mapRef.current;
+        if (map) map.removeLayer(m);
+      }
+      packetMarkersRef.current.clear();
+      return;
+    }
+    let animId;
+    const map = mapRef.current;
+    const L = window.L;
+    if (!map || !L) return;
+
+    const cleanUpPacketMarkers = () => {
+      for (const m of packetMarkersRef.current.values()) {
+        map.removeLayer(m);
+      }
+      packetMarkersRef.current.clear();
+    };
+
+    let time = 0;
+    const drawPackets = () => {
+      time += 0.016;
+      const flowSpeed = 0.55;
+
+      const activePacketIds = new Set();
+      const isNodeOnline = (n) => {
+        if (dataSourceManager.mode === 'hardware' || dataSourceManager.mode === 'online') {
+          return n.data.status !== 'failed';
+        }
+        return true;
+      };
+
+      let pIdx = 0;
+      for (const edge of graph.edges) {
+        const src = graph.nodes.get(edge.source);
+        const tgt = graph.nodes.get(edge.target);
+        if (!src || !tgt) continue;
+        if (!isNodeOnline(src) || !isNodeOnline(tgt)) continue;
+
+        // Animate a packet moving from src to tgt
+        const progress = (time * flowSpeed + pIdx * 0.35) % 1;
+        const pLat = src.lat + (tgt.lat - src.lat) * progress;
+        const pLon = src.lon + (tgt.lon - src.lon) * progress;
+
+        const pktId = `flow-${edge.source}-${edge.target}`;
+        activePacketIds.add(pktId);
+
+        let marker = packetMarkersRef.current.get(pktId);
+        if (!marker) {
+          marker = L.circleMarker([pLat, pLon], {
+            radius: 4.5,
+            fillColor: '#00E5FF', // bright cyan packet
+            fillOpacity: 0.95,
+            color: '#ffffff',
+            weight: 1.5,
+            className: 'pulse-packet-marker'
+          }).addTo(map);
+          packetMarkersRef.current.set(pktId, marker);
+        } else {
+          marker.setLatLng([pLat, pLon]);
+        }
+        pIdx++;
+      }
+
+      // Remove any markers that are no longer active
+      for (const [id, marker] of packetMarkersRef.current.entries()) {
+        if (!activePacketIds.has(id)) {
+          map.removeLayer(marker);
+          packetMarkersRef.current.delete(id);
+        }
+      }
+
+      animId = requestAnimationFrame(drawPackets);
+    };
+
+    drawPackets();
+
+    return () => {
+      cancelAnimationFrame(animId);
+      cleanUpPacketMarkers();
+    };
+  }, [graph, dataSourceManager.mode, tick]);
+
+  // Canvas Loop for Simulation Mode
+  useEffect(() => {
+    if (dataSourceManager.mode !== 'simulation') return;
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    function resize() {
+      const r = container.getBoundingClientRect();
+      canvas.width = r.width;
+      canvas.height = r.height;
+      graph.setCanvasSize(r.width, r.height);
+    }
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+
+    function draw() {
+      timeRef.current += 0.016;
+      const t = timeRef.current;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // Grid
+      ctx.strokeStyle = 'rgba(255,101,63,0.04)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 50) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+      for (let y = 0; y < h; y += 50) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+
+      const PAD = 55;
+
+      // Edges
+      for (const edge of graph.edges) {
+        const src = graph.nodes.get(edge.source);
+        const tgt = graph.nodes.get(edge.target);
+        if (!src || !tgt) continue;
+        const sp = nodePos(src, w, h, PAD);
+        const tp = nodePos(tgt, w, h, PAD);
+        const failed = src.data.status === 'failed' || tgt.data.status === 'failed';
+
+        ctx.strokeStyle = failed ? 'rgba(255,23,68,0.2)' : 'rgba(255,200,92,0.25)';
+        ctx.lineWidth = failed ? 1 : 1.5;
+        ctx.setLineDash(failed ? [4, 4] : []);
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y);
+        ctx.lineTo(tp.x, tp.y);
+        ctx.stroke();
+
+        // Weight label
+        if (!failed) {
+          ctx.font = '10px "Share Tech Mono"';
+          ctx.fillStyle = 'rgba(255,200,92,0.55)';
+          ctx.textAlign = 'center';
+          ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 5);
+        }
+
+        // Animated flow dots on active edges
+        if (!failed) {
+          const flowOff = (t * 40) % 20;
+          ctx.setLineDash([3, 17]);
+          ctx.lineDashOffset = -flowOff;
+          ctx.strokeStyle = 'rgba(0,229,255,0.3)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(tp.x, tp.y);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
+      }
+
+      // Active Packets — only draw when flow is active (sim.isRunning)
+      if (sim.isRunning) {
+        for (const pkt of sim.activePackets) {
+          if (!pkt.path || pkt.path.length < 2) continue;
+          const progress = (t * 0.45) % 1;
+          const totalSegs = pkt.path.length - 1;
+          const segFloat = progress * totalSegs;
+          const seg = Math.min(Math.floor(segFloat), totalSegs - 1);
+          const segT = segFloat - seg;
+          const sn = graph.nodes.get(pkt.path[seg]);
+          const en = graph.nodes.get(pkt.path[seg + 1]);
+          if (!sn || !en) continue;
+          const sp = nodePos(sn, w, h, PAD);
+          const ep = nodePos(en, w, h, PAD);
+          const px = sp.x + (ep.x - sp.x) * segT;
+          const py = sp.y + (ep.y - sp.y) * segT;
+
+          const color = pkt.getPriorityColor();
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 12;
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+      }
+
+      // Nodes
+      for (const [id, node] of graph.nodes) {
+        const isSel = selectedNode === id;
+        const status = node.data.status;
+        const { x, y } = nodePos(node, w, h, PAD);
+
+        node.x = x;
+        node.y = y;
+
+        // Pulse glow
+        let glowColor;
+        if (status === 'failed') glowColor = 'rgba(255,23,68,0.35)';
+        else if (status === 'critical') glowColor = 'rgba(255,101,63,0.45)';
+        else if (status === 'warning') glowColor = 'rgba(255,200,92,0.35)';
+        else glowColor = 'rgba(0,229,255,0.22)';
+
+        const pulseR = (isSel ? 28 : 22) + Math.sin(t * 2.2 + node.nx * 6.28) * 5;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, pulseR);
+        grad.addColorStop(0, glowColor);
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, pulseR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Node body
+        const r = isSel ? 14 : 10;
+        let fillColor;
+        if (status === 'failed') fillColor = '#FF1744';
+        else if (status === 'critical') fillColor = '#FF653F';
+        else if (status === 'warning') fillColor = '#FFC85C';
+        else fillColor = '#00E5FF';
+
+        ctx.fillStyle = fillColor;
+        ctx.shadowColor = fillColor;
+        ctx.shadowBlur = isSel ? 20 : 10;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Selection ring
+        if (isSel) {
+          ctx.strokeStyle = '#FFC85C';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // ESP32 label
+        ctx.font = 'bold 10px "Orbitron", monospace';
+        ctx.fillStyle = '#f0eaf8';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.label, x, y - r - 8);
+
+        // Alert blink
+        if (status === 'critical' || status === 'warning') {
+            ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 5, y - 4);
+        }
+
+        // Battery micro-bar
+        const bw = 28, bh = 4;
+        const bx = x - bw / 2, by = y + r + 3;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.fillRect(bx, by, bw, bh);
+        const pct = node.data.battery / 100;
+        ctx.fillStyle = pct < 0.15 ? '#FF1744' : pct < 0.3 ? '#FFC85C' : '#39FF14';
+        ctx.fillRect(bx, by, bw * pct, bh);
+      }
+
+      animRef.current = requestAnimationFrame(draw);
+    }
+
+    draw();
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      ro.disconnect();
+    };
+  }, [graph, sim, selectedNode, dataSourceManager.mode, tick, packetFlowActive]);
+
   const handleToggleSim = () => {
     if (sim.isRunning) {
       sim.stop();
+      setPacketFlowActive(false);
     } else {
       sim.start();
+      setPacketFlowActive(true);
     }
     setTick(t => t + 1);
   };
@@ -66,20 +561,13 @@ export default function CommandCenter() {
     setTick(t => t + 1);
   };
 
-  // Auto-start simulation (only in simulation mode)
   useEffect(() => {
-    if (dataSourceManager && !dataSourceManager.isHardware && !sim.isRunning) {
-      sim.start();
-    }
+    // Do NOT auto-start sim — user must press Start
+    // This ensures packet flow only starts on explicit user action
   }, [sim]);
 
-  // Subscribe for re-renders
-  useEffect(() => {
-    const unsub = sim.subscribe(() => setTick(t => t + 1));
-    return unsub;
-  }, [sim]);
+  // Global tick handles updates for both simulation and hardware modes
 
-  // Live real-time update of the sub-servers data table
   useEffect(() => {
     const subs = Array.from(graph.nodes.entries())
       .filter(([id]) => id !== 'A')
@@ -94,207 +582,8 @@ export default function CommandCenter() {
     setTableData(subs);
   }, [graph, dataSourceManager, tick]);
 
-  // ── Main Canvas Loop ──────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-
-    function resize() {
-      const r = container.getBoundingClientRect();
-      canvas.width = r.width;
-      canvas.height = r.height;
-      graph.setCanvasSize(r.width, r.height);
-    }
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(container);
-
-    function draw() {
-      timeRef.current += 0.016;
-      const t = timeRef.current;
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width;
-      const h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-
-      const isLight = theme === 'light';
-
-      // ── Dotted Grid (Nash.ai style) ──
-      ctx.fillStyle = isLight ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.08)';
-      for (let x = 20; x < w; x += 40) {
-        for (let y = 20; y < h; y += 40) {
-          ctx.beginPath();
-          ctx.arc(x, y, 1, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      const PAD = 65;
-
-      // ── Edges ──
-      for (const edge of graph.edges) {
-        const src = graph.nodes.get(edge.source);
-        const tgt = graph.nodes.get(edge.target);
-        if (!src || !tgt) continue;
-        const sp = nodePos(src, w, h, PAD);
-        const tp = nodePos(tgt, w, h, PAD);
-        const failed = src.data.status === 'failed' || tgt.data.status === 'failed';
-
-        ctx.strokeStyle = failed 
-          ? (isLight ? 'rgba(255,138,128,0.3)' : 'rgba(255,23,68,0.25)') 
-          : (isLight ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.12)');
-        ctx.lineWidth = failed ? 1.5 : 2.5;
-        ctx.setLineDash(failed ? [4, 4] : []);
-        ctx.beginPath();
-        ctx.moveTo(sp.x, sp.y);
-        ctx.lineTo(tp.x, tp.y);
-        ctx.stroke();
-
-        // Weight label
-        if (!failed) {
-          ctx.font = 'bold 11px "Geist Mono", monospace';
-          ctx.fillStyle = isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.45)';
-          ctx.textAlign = 'center';
-          ctx.fillText(edge.weight.toString(), (sp.x + tp.x) / 2, (sp.y + tp.y) / 2 - 5);
-        }
-
-        // Animated flow dots on active edges (Nash.ai style)
-        if (!failed) {
-          const flowOff = (t * 30) % 20;
-          ctx.setLineDash([3, 17]);
-          ctx.lineDashOffset = -flowOff;
-          ctx.strokeStyle = isLight ? 'rgba(255,255,255,0.75)' : 'rgba(201,255,0,0.6)';
-          ctx.lineWidth = 2.0;
-          ctx.beginPath();
-          ctx.moveTo(sp.x, sp.y);
-          ctx.lineTo(tp.x, tp.y);
-          ctx.stroke();
-        }
-        ctx.setLineDash([]);
-        ctx.lineDashOffset = 0;
-      }
-
-      // ── Active Packets ──
-      for (const pkt of sim.activePackets) {
-        if (!pkt.path || pkt.path.length < 2) continue;
-
-        const progress = (t * 0.45) % 1;
-        const totalSegs = pkt.path.length - 1;
-        const segFloat = progress * totalSegs;
-        const seg = Math.min(Math.floor(segFloat), totalSegs - 1);
-        const segT = segFloat - seg;
-        const sn = graph.nodes.get(pkt.path[seg]);
-        const en = graph.nodes.get(pkt.path[seg + 1]);
-        if (!sn || !en) continue;
-        const sp = nodePos(sn, w, h, PAD);
-        const ep = nodePos(en, w, h, PAD);
-        const px = sp.x + (ep.x - sp.x) * segT;
-        const py = sp.y + (ep.y - sp.y) * segT;
-
-        const color = pkt.getPriorityColor();
-        let dotColor;
-        if (isLight) {
-          dotColor = '#ffffff';
-        } else {
-          dotColor = color === '#39FF14' || color === 'var(--neon-green)' ? '#c9ff00' : color;
-        }
-        
-        ctx.fillStyle = dotColor;
-        ctx.shadowColor = dotColor;
-        ctx.shadowBlur = isLight ? 3 : 8;
-        ctx.beginPath();
-        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-
-      // ── Nodes ──
-      for (const [id, node] of graph.nodes) {
-        const isSel = selectedNode === id;
-        const status = node.data.status;
-        const { x, y } = nodePos(node, w, h, PAD);
-
-        const isGateway = id === 'A' && dataSourceManager?.isHardware;
-
-        // Sync legacy .x/.y for algorithm pages
-        node.x = x;
-        node.y = y;
-
-        // Node base colors based on theme
-        const activeColor = isLight ? '#ffffff' : '#c9ff00';
-        const gatewayColor = '#FFD700';
-        
-        let fillColor;
-        if (isGateway) fillColor = gatewayColor;
-        else if (status === 'failed') fillColor = isLight ? '#ff8a80' : '#FF1744';
-        else if (status === 'critical') fillColor = isLight ? '#ffb74d' : '#FF9100';
-        else if (status === 'warning') fillColor = isLight ? '#ffe082' : '#FFC85C';
-        else fillColor = activeColor;
-
-        // Node core body (Larger visible dot)
-        const r = isSel ? (isGateway ? 24 : 18) : (isGateway ? 18 : 14);
-
-        ctx.fillStyle = fillColor;
-        ctx.shadowColor = fillColor;
-        ctx.shadowBlur = isSel ? (isLight ? 8 : 18) : (isLight ? 3 : 8);
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        // Selection ring
-        if (isSel) {
-          ctx.strokeStyle = fillColor;
-          ctx.lineWidth = 2.5;
-          ctx.beginPath();
-          ctx.arc(x, y, r + 8, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-
-        // ESP32 label (placed cleanly at top/bottom of node)
-        let labelText = node.label;
-        if (dataSourceManager?.isHardware) {
-          if (id === 'A') {
-            labelText = "Main Server (Gateway)";
-          } else {
-            labelText = `Sub-Server ${id}`;
-          }
-        }
-        ctx.font = 'bold 11px "Geist Mono", monospace';
-        ctx.fillStyle = isLight ? '#ffffff' : (isGateway ? '#FFD700' : 'rgba(255,255,255,0.75)');
-        ctx.textAlign = 'center';
-        ctx.fillText(labelText, x, y - r - 10);
-
-        // Alert text (emojiless alert label)
-        if (status === 'critical' || status === 'warning') {
-            ctx.font = 'bold 11px "Geist Mono", monospace';
-            ctx.fillStyle = status === 'critical' ? (isLight ? '#ff8a80' : '#FF1744') : '#FFC85C';
-            ctx.fillText(status === 'critical' ? 'ALERT' : '!', x + r + 8, y + 4);
-        }
-
-        // Battery micro-bar (drawn elegantly below node)
-        const bw = 24, bh = 4;
-        const bx = x - bw / 2, by = y + r + 10;
-        ctx.fillStyle = isLight ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.12)';
-        ctx.fillRect(bx, by, bw, bh);
-        const pct = node.data.battery / 100;
-        ctx.fillStyle = pct < 0.15 ? (isLight ? '#ff8a80' : '#FF1744') : pct < 0.3 ? '#FFC85C' : (isLight ? '#ffffff' : '#c9ff00');
-        ctx.fillRect(bx, by, bw * pct, bh);
-      }
-
-      animRef.current = requestAnimationFrame(draw);
-    }
-
-    draw();
-    return () => {
-      cancelAnimationFrame(animRef.current);
-      ro.disconnect();
-    };
-  }, [graph, sim, selectedNode, theme]);
-
-  // ── Mouse: select & drag ──────────────────────────────────────────
   const handleMouseDown = useCallback((e) => {
+    if (dataSourceManager.mode !== 'simulation') return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -312,11 +601,12 @@ export default function CommandCenter() {
       }
     }
     setSelectedNode(null);
-  }, [graph]);
+  }, [graph, dataSourceManager.mode]);
 
   const handleMouseMove = useCallback((e) => {
     if (!dragRef.current) return;
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -373,7 +663,7 @@ export default function CommandCenter() {
       <div className="page-header" style={{ marginBottom: '20px', borderBottom: '1px solid var(--border-subtle)' }}>
         <h2 className="page-title" style={{ fontSize: '1.4rem', fontWeight: '800', letterSpacing: '-0.5px', textTransform: 'none' }}>Command Center</h2>
         <div className="page-controls" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {!dataSourceManager?.isHardware ? (
+          {dataSourceManager?.isSimulation ? (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <select
                 value={preset}
@@ -426,8 +716,19 @@ export default function CommandCenter() {
             <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', minWidth: 28 }}>{simSpeed.toFixed(1)}x</span>
           </div>
 
-          <button className="btn btn-primary" onClick={handleToggleSim} style={{ padding: '6px 16px', fontWeight: '600' }}>
-            {sim.isRunning ? 'Pause' : 'Start'}
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (dataSourceManager.mode !== 'simulation') {
+                // In online/hardware mode: just toggle packet flow
+                setPacketFlowActive(v => !v);
+              } else {
+                handleToggleSim();
+              }
+            }}
+            style={{ padding: '6px 16px', fontWeight: '600' }}
+          >
+            {packetFlowActive || sim.isRunning ? '⏸ Pause Flow' : '▶ Start Flow'}
           </button>
           <button className="btn" onClick={handleReset} style={{ padding: '6px 16px', borderColor: 'rgba(255,255,255,0.1)' }}>
             Reset
@@ -445,19 +746,26 @@ export default function CommandCenter() {
               Live Topology Map — Autonomic Mesh
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-              {sim.isRunning ? '● LIVE MONITORING' : '○ PAUSED'} · Click node to inspect
+              {(dataSourceManager.mode === 'simulation' ? sim.isRunning : packetFlowActive) ? '● LIVE MONITORING' : '○ PAUSED'} · Click node to inspect
             </span>
           </div>
           
           <div className="topo-canvas-wrap" ref={containerRef} style={{ flex: 1, position: 'relative', borderRadius: '8px', overflow: 'hidden' }}>
-            <canvas
-              ref={canvasRef}
-              onMouseDown={handleMouseDown}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-              style={{ width: '100%', height: '100%', display: 'block', cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
-            />
+            {dataSourceManager.mode === 'simulation' ? (
+              <canvas
+                ref={canvasRef}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+                style={{ display: 'block', width: '100%', height: '100%', background: '#05020f', cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
+              />
+            ) : (
+              <div
+                ref={mapDivRef}
+                style={{ width: '100%', height: '100%', background: '#05020f' }}
+              />
+            )}
 
             {/* Floating Metrics Overlay (Nash.ai Style, Screenshot 3) */}
             <div style={{
@@ -533,14 +841,14 @@ export default function CommandCenter() {
                   tableData.map(node => (
                     <tr key={node.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                       <td style={{ color: 'var(--neon-cyan)', fontWeight: 'bold' }}>Sub-Server {node.id}</td>
-                      <td style={{ color: node.temperature > 60 ? '#FF1744' : '#FFC85C' }}>
-                        {node.temperature !== undefined ? `${node.temperature.toFixed(1)}°C` : 'N/A'}
+                      <td style={{ color: node.temperature !== null && node.temperature > 60 ? '#FF1744' : '#FFC85C' }}>
+                        {node.temperature !== undefined && node.temperature !== null ? `${node.temperature.toFixed(1)}°C` : 'N/A'}
                       </td>
                       <td>
-                        {node.humidity !== undefined ? `${node.humidity.toFixed(1)}%` : 'N/A'}
+                        {node.humidity !== undefined && node.humidity !== null ? `${node.humidity.toFixed(1)}%` : 'N/A'}
                       </td>
-                      <td style={{ color: node.gasLevel > 210 ? '#FF1744' : '#FFC85C' }}>
-                        {node.gasLevel !== undefined ? node.gasLevel.toFixed(0) : 'N/A'}
+                      <td style={{ color: node.gasLevel !== null && node.gasLevel > 210 ? '#FF1744' : '#FFC85C' }}>
+                        {node.gasLevel !== undefined && node.gasLevel !== null ? node.gasLevel.toFixed(0) : 'N/A'}
                       </td>
                       <td>
                         <span className={`badge ${node.status === 'active' ? 'badge-green' : node.status === 'warning' ? 'badge-yellow' : 'badge-red'}`}>
@@ -568,9 +876,11 @@ export default function CommandCenter() {
           {sel ? (
             <div className="panel-scroll animate-slide-in">
               <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
-                  Delete Node
-                </button>
+                {dataSourceManager?.isSimulation && (
+                  <button className="btn btn-sm btn-danger" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => { graph.removeNode(selectedNode); setSelectedNode(null); sim.eventLog.add('warning', `Node ${sel.label} removed from mesh`); setTick(t => t + 1); }}>
+                    Delete Node
+                  </button>
+                )}
                 <button className="btn btn-sm btn-yellow" style={{ flex: 1, padding: '8px', fontWeight: 'bold' }} onClick={() => sim.failNode(selectedNode)}>
                   Fail Node
                 </button>
@@ -591,9 +901,24 @@ export default function CommandCenter() {
                 </div>
                 <table className="data-table">
                   <tbody>
-                    <tr><td>Temperature</td><td style={{ color: sel.data.temperature > 60 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.temperature.toFixed(1)}°C</td></tr>
-                    <tr><td>Humidity</td><td>{sel.data.humidity.toFixed(1)}%</td></tr>
-                    <tr><td>Gas Level</td><td style={{ color: sel.data.gasLevel > 210 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>{sel.data.gasLevel.toFixed(0)}</td></tr>
+                    <tr>
+                      <td>Temperature</td>
+                      <td style={{ color: sel.data.temperature !== null && sel.data.temperature !== undefined && sel.data.temperature > 60 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>
+                        {sel.data.temperature !== null && sel.data.temperature !== undefined ? `${sel.data.temperature.toFixed(1)}°C` : 'N/A'}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Humidity</td>
+                      <td>
+                        {sel.data.humidity !== null && sel.data.humidity !== undefined ? `${sel.data.humidity.toFixed(1)}%` : 'N/A'}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Gas Level</td>
+                      <td style={{ color: sel.data.gasLevel !== null && sel.data.gasLevel !== undefined && sel.data.gasLevel > 210 ? '#FF1744' : '#FFC85C', fontWeight: 'bold' }}>
+                        {sel.data.gasLevel !== null && sel.data.gasLevel !== undefined ? sel.data.gasLevel.toFixed(0) : 'N/A'}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -601,9 +926,26 @@ export default function CommandCenter() {
               <div className="section-header" style={{ marginTop: 12, fontSize: '0.7rem', paddingBottom: 4 }}>Detailed Info</div>
               <table className="data-table" style={{ marginBottom: 12 }}>
                 <tbody>
-                  {sel.id !== 'A' && <tr><td>Battery</td><td style={{ color: sel.data.battery < 15 ? '#FF1744' : sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>{sel.data.battery.toFixed(1)}%</td></tr>}
-                  <tr><td>RSSI</td><td>{sel.data.rssi.toFixed(0)} dBm</td></tr>
-                  <tr><td>Latency</td><td>{sel.data.latency.toFixed(1)} ms</td></tr>
+                  {sel.id !== 'A' && (
+                    <tr>
+                      <td>Battery</td>
+                      <td style={{ color: sel.data.battery !== null && sel.data.battery !== undefined && sel.data.battery < 15 ? '#FF1744' : sel.data.battery !== null && sel.data.battery !== undefined && sel.data.battery < 30 ? '#FFC85C' : '#39FF14' }}>
+                        {sel.data.battery !== null && sel.data.battery !== undefined ? `${sel.data.battery.toFixed(1)}%` : 'N/A'}
+                      </td>
+                    </tr>
+                  )}
+                  <tr>
+                    <td>RSSI</td>
+                    <td>
+                      {sel.data.rssi !== null && sel.data.rssi !== undefined ? `${sel.data.rssi.toFixed(0)} dBm` : 'N/A'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Latency</td>
+                    <td>
+                      {sel.data.latency !== null && sel.data.latency !== undefined ? `${sel.data.latency.toFixed(1)} ms` : 'N/A'}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
 
@@ -635,6 +977,16 @@ export default function CommandCenter() {
                             const newWeight = Number(e.target.value);
                             if (isNaN(newWeight) || newWeight < 1) return;
                             edge.weight = newWeight;
+                            
+                            // Also update backend API in online/hardware mode
+                            if (dataSourceManager.mode !== 'simulation') {
+                              fetch('/api/edges/weight', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ source: edge.source, target: edge.target, weight: newWeight })
+                              }).catch(err => console.error("Error updating edge weight:", err));
+                            }
+                            
                             setTick(t => t + 1);
                           }}
                         />
@@ -671,7 +1023,7 @@ export default function CommandCenter() {
                         Link {graph.nodes.get(edge.source)?.label} ↔ {graph.nodes.get(edge.target)?.label}
                       </span>
                       <span style={{ color: 'var(--warm-yellow)', fontWeight: 'bold' }}>
-                        Cost: {edge.weight}ms
+                        Cost: {edge.weight.toFixed(dataSourceManager.mode === 'simulation' ? 0 : 1)}{dataSourceManager.mode === 'simulation' ? 'ms' : ' km'}
                       </span>
                     </div>
                   ))}
