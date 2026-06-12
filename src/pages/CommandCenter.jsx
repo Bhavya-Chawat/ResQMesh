@@ -774,7 +774,7 @@ export default function CommandCenter() {
               left: '12px',
               right: '12px',
               display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
+              gridTemplateColumns: 'repeat(4, 1fr)',
               gap: '8px',
               zIndex: 5
             }}>
@@ -793,10 +793,6 @@ export default function CommandCenter() {
               <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
                 <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Grid Density</div>
                 <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#ffffff' }}>{(health.density * 100).toFixed(0)}%</div>
-              </div>
-              <div style={{ background: 'rgba(6,10,21,0.85)', border: '1px solid rgba(201, 255, 0, 0.25)', borderRadius: '8px', padding: '8px 12px', backdropFilter: 'blur(10px)' }}>
-                <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', fontFamily: 'var(--font-display)', marginBottom: '2px' }}>Avg Battery</div>
-                <div style={{ fontSize: '1rem', fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: health.avgBattery < 30 ? 'var(--neon-red)' : 'var(--nash-chartreuse)' }}>{health.avgBattery.toFixed(0)}%</div>
               </div>
             </div>
             

@@ -6,26 +6,27 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Node identity ─────────────────────────────────────────────────────────────
-#define NODE_ID     "D"
-#define NODE_LABEL  "Node D"
-#define IS_GATEWAY  false   // Set to false for Node B
+#define NODE_ID     "C"
+#define NODE_LABEL  "Node C"
+#define IS_GATEWAY  false   // Set to false for Node C
 
 // ── WiFi / MQTT (gateway only — ignored on mesh nodes) ───────────────────────
 #define WIFI_SSID      "Madhur"
 #define WIFI_PASSWORD  "qwertyuiop"
-#define MQTT_BROKER    "172.20.10.9"
+#define MQTT_BROKER    "172.20.10.2"
 #define MQTT_PORT      1883
 #define MQTT_USER      ""
 #define MQTT_PASS      ""
 
 // ── ESP-NOW channel ───────────────────────────────────────────────────────────
-// Must match on all nodes in the mesh. Gateway uses WIFI_AP_STA so its channel
+// Must match on all nodes in the mesh. Gate  way uses WIFI_AP_STA so its channel
 // is locked by the AP; mesh nodes will hop to this channel automatically.
 #define ESPNOW_CHANNEL  6
 
 // ── Sensor pins ───────────────────────────────────────────────────────────────
 #define DHT_PIN       4
 #define DHT_TYPE      DHT22
+
 #define GAS_PIN       34    // MQ-2 analog output
 #define BATTERY_PIN   35    // Voltage divider to LiPo
 

@@ -19,6 +19,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <PubSubClient.h>
+\
 #include <ArduinoJson.h>
 #include <DHT.h>
 
@@ -46,6 +47,8 @@ static uint8_t MY_MAC[6];   // filled in setup()
 static uint32_t lastSensor    = 0;
 static uint32_t lastHeartbeat = 0;
 static uint32_t lastTopology  = 0;
+
+bool isIsolatedManually = false;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MQTT helpers  (gateway only)
@@ -81,6 +84,56 @@ void mqttPublishJson(const char* msgType, JsonDocument& doc) {
   serializeJson(doc, buf);
   mqttClient.publish(topicFor(msgType).c_str(), buf);
 }
+
+#if IS_GATEWAY
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String topicStr = String(topic);
+  int firstSlash = topicStr.indexOf('/');
+  int lastSlash = topicStr.lastIndexOf('/');
+  if (firstSlash == -1 || lastSlash == -1 || firstSlash == lastSlash) return;
+  String targetNodeId = topicStr.substring(firstSlash + 1, lastSlash);
+
+  StaticJsonDocument<128> doc;
+  DeserializationError error = deserializeJson(doc, payload, length);
+  if (error) {
+    Serial.printf("[MQTT Callback] JSON parse failed: %s\n", error.c_str());
+    return;
+  }
+
+  const char* status = doc["status"];
+  if (!status) return;
+
+  Serial.printf("[MQTT Callback] Got control command for node %s: %s\n", targetNodeId.c_str(), status);
+
+  if (targetNodeId == NODE_ID) {
+    if (strcmp(status, "failed") == 0) {
+      isIsolatedManually = true;
+      digitalWrite(LED_RED_PIN, HIGH);
+      Serial.println("[MQTT Callback] Gateway manually isolated — Red LED glows");
+    } else if (strcmp(status, "active") == 0) {
+      isIsolatedManually = false;
+      digitalWrite(LED_RED_PIN, LOW);
+      Serial.println("[MQTT Callback] Gateway manually recovered — Red LED off");
+    }
+    return;
+  }
+
+  MeshFrame f;
+  frameInit(&f, PKT_DATA, NODE_ID, targetNodeId.c_str(), MY_MAC);
+  serializeJson(doc, f.payload, FRAME_PAYLOAD_LEN);
+  f.seqNum = forwarding.nextSeq();
+
+  const uint8_t* nhMac = routing.nextHopMac(targetNodeId.c_str());
+  if (!nhMac) nhMac = routing.bestNeighborMac();
+
+  if (nhMac) {
+    qosQueue.enqueue(nhMac, f, QOS_HIGH);
+    Serial.printf("[MQTT Callback] Routed control packet to %s via next-hop\n", targetNodeId.c_str());
+  } else {
+    Serial.printf("[MQTT Callback] No route to %s, control packet dropped\n", targetNodeId.c_str());
+  }
+}
+#endif
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ESP-NOW receive callback
@@ -361,10 +414,12 @@ void setup() {
   Serial.print("[WiFi] Connecting");
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.printf("\n[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[WiFi] Channel: %d\n", WiFi.channel());
   Serial.printf("[WiFi] MAC: %s  (share this with mesh nodes)\n",
                 WiFi.macAddress().c_str());
 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);
 
 #else
@@ -436,19 +491,19 @@ void loop() {
   routing.tick();
 
   // ── Sensor readings ───────────────────────────────────────────────────────
-  if (now - lastSensor >= SENSOR_INTERVAL_MS) {
+  if (!isIsolatedManually && (now - lastSensor >= SENSOR_INTERVAL_MS)) {
     lastSensor = now;
     publishSensor();
   }
 
   // ── Heartbeat ─────────────────────────────────────────────────────────────
-  if (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+  if (!isIsolatedManually && (now - lastHeartbeat >= HEARTBEAT_INTERVAL_MS)) {
     lastHeartbeat = now;
     publishHeartbeat();
   }
 
   // ── Topology report ───────────────────────────────────────────────────────
-  if (now - lastTopology >= TOPOLOGY_INTERVAL_MS) {
+  if (!isIsolatedManually && (now - lastTopology >= TOPOLOGY_INTERVAL_MS)) {
     lastTopology = now;
     publishTopology();
   }

@@ -54,15 +54,14 @@ export default function Reports() {
   const handleExportCSV = () => {
     if (!history || history.length === 0) return;
     
-    const headers = ['Record ID', 'Timestamp', 'Node ID', 'Temperature (°C)', 'Humidity (%)', 'Gas Level (ppm)', 'Battery (%)'];
+    const headers = ['Record ID', 'Timestamp', 'Node ID', 'Temperature (°C)', 'Humidity (%)', 'Gas Level (ppm)'];
     const rows = history.map(r => [
       r.id,
       r.timestamp,
       r.node_id,
       r.temperature !== null ? r.temperature : 'N/A',
       r.humidity !== null ? r.humidity : 'N/A',
-      r.gas_level !== null ? r.gas_level : 'N/A',
-      r.battery !== null ? r.battery : 'N/A'
+      r.gas_level !== null ? r.gas_level : 'N/A'
     ]);
 
     const csvContent = [
@@ -305,7 +304,6 @@ export default function Reports() {
                       <th style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: 'bold' }}>TEMPERATURE</th>
                       <th style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: 'bold' }}>HUMIDITY</th>
                       <th style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: 'bold' }}>GAS LEVEL</th>
-                      <th style={{ padding: '10px 14px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontWeight: 'bold' }}>BATTERY</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -324,9 +322,6 @@ export default function Reports() {
                         </td>
                         <td style={{ padding: '10px 14px', color: row.gas_level > 250 ? 'var(--neon-red)' : 'var(--text-primary)' }}>
                           {row.gas_level !== null ? `${row.gas_level.toFixed(1)} ppm` : 'N/A'}
-                        </td>
-                        <td style={{ padding: '10px 14px', color: 'var(--text-secondary)' }}>
-                          {row.battery !== null ? `${row.battery.toFixed(1)}%` : 'N/A'}
                         </td>
                       </tr>
                     ))}
