@@ -2,6 +2,9 @@
 
 **Intelligent Self-Healing Disaster Communication & Rescue Routing System**
 
+> [!TIP]
+> Read the comprehensive **[Project Explanation & Features Guide](file:///c:/Users/abhir/ResQMesh/PROJECT_EXPLANATION.md)** for a detailed overview of the problem statement, objectives, methodology, and full feature set.
+
 ResQMesh is a disaster-response communication platform combining ESP32-based mesh networking, IoT sensing, graph algorithms, and real-time visualization to provide resilient communication and situational awareness when traditional infrastructure is unavailable.
 
 Designed for flood, earthquake, landslide, and building-collapse scenarios where cellular networks are unavailable or unreliable.

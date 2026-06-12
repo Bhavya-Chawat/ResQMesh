@@ -11,7 +11,7 @@ function nodePos(node, w, h, pad = 55) {
 }
 
 export default function CommandCenter() {
-  const { graph, sim, dataSourceManager, theme, tick, packetFlowActive, setPacketFlowActive } = useApp();
+  const { graph, sim, dataSourceManager, theme, tick, setTick, packetFlowActive, setPacketFlowActive } = useApp();
   const mapRef = useRef(null);
   const mapDivRef = useRef(null);
   const canvasRef = useRef(null);
@@ -26,6 +26,11 @@ export default function CommandCenter() {
   const dragRef = useRef(null);
   const animRef = useRef(null);
   const timeRef = useRef(0);
+  const mapTimeRef = useRef(0);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => { isMountedRef.current = false; };
+  }, []);
 
   const [preset, setPreset] = useState('ring');
   const [nodeCount, setNodeCount] = useState(5);
@@ -34,7 +39,7 @@ export default function CommandCenter() {
   // Custom states for architectural redesign
   const [isAdjusting, setIsAdjusting] = useState(false);
   const [tableData, setTableData] = useState([]);
-  const [simSpeed, setSimSpeed] = useState(1);
+  const [simSpeed, setSimSpeed] = useState(sim.speed || 1);
 
   // Fetch RainViewer radar layer timestamp
   useEffect(() => {
@@ -252,18 +257,9 @@ export default function CommandCenter() {
     }
   }, [graph, selectedNode, dataSourceManager.mode, tick]);
 
-  // Packet flow animation loop on Leaflet Map — only runs when packetFlowActive
+  // Packet flow animation loop on Leaflet Map — runs to keep visual representation updated
   useEffect(() => {
     if (dataSourceManager.mode === 'simulation') return;
-    if (!packetFlowActive) {
-      // Clean up any existing packet markers when flow is stopped
-      for (const m of packetMarkersRef.current.values()) {
-        const map = mapRef.current;
-        if (map) map.removeLayer(m);
-      }
-      packetMarkersRef.current.clear();
-      return;
-    }
     let animId;
     const map = mapRef.current;
     const L = window.L;
@@ -276,10 +272,12 @@ export default function CommandCenter() {
       packetMarkersRef.current.clear();
     };
 
-    let time = 0;
     const drawPackets = () => {
-      time += 0.016;
-      const flowSpeed = 0.55;
+      if (packetFlowActive) {
+        mapTimeRef.current += 0.016;
+      }
+      const time = mapTimeRef.current;
+      const flowSpeed = 0.55 * simSpeed;
 
       const activePacketIds = new Set();
       const isNodeOnline = (n) => {
@@ -289,37 +287,58 @@ export default function CommandCenter() {
         return true;
       };
 
-      let pIdx = 0;
-      for (const edge of graph.edges) {
-        const src = graph.nodes.get(edge.source);
-        const tgt = graph.nodes.get(edge.target);
-        if (!src || !tgt) continue;
-        if (!isNodeOnline(src) || !isNodeOnline(tgt)) continue;
+      const curSelected = selectedNode || Array.from(graph.nodes.keys())[0];
+      const curRoutingTable = curSelected ? graph.getRoutingTable(curSelected) : [];
 
-        // Animate a packet moving from src to tgt
-        const progress = (time * flowSpeed + pIdx * 0.35) % 1;
-        const pLat = src.lat + (tgt.lat - src.lat) * progress;
-        const pLon = src.lon + (tgt.lon - src.lon) * progress;
+      curRoutingTable.forEach((route, rIdx) => {
+        if (route.path && route.path.length > 1 && route.destination !== curSelected) {
+          const path = route.path;
+          
+          // Check if path nodes are online
+          let pathValid = true;
+          for (const id of path) {
+            const n = graph.nodes.get(id);
+            if (!n || !isNodeOnline(n)) {
+              pathValid = false;
+              break;
+            }
+          }
 
-        const pktId = `flow-${edge.source}-${edge.target}`;
-        activePacketIds.add(pktId);
+          if (pathValid) {
+            const totalHops = path.length - 1;
+            // Phase offset so packets start at different times
+            const progress = (time * flowSpeed + rIdx * 0.35) % totalHops;
+            const segmentIdx = Math.floor(progress);
+            const segmentT = progress - segmentIdx;
 
-        let marker = packetMarkersRef.current.get(pktId);
-        if (!marker) {
-          marker = L.circleMarker([pLat, pLon], {
-            radius: 4.5,
-            fillColor: '#00E5FF', // bright cyan packet
-            fillOpacity: 0.95,
-            color: '#ffffff',
-            weight: 1.5,
-            className: 'pulse-packet-marker'
-          }).addTo(map);
-          packetMarkersRef.current.set(pktId, marker);
-        } else {
-          marker.setLatLng([pLat, pLon]);
+            const n1 = graph.nodes.get(path[segmentIdx]);
+            const n2 = graph.nodes.get(path[segmentIdx + 1]);
+
+            if (n1 && n2) {
+              const pLat = n1.lat + (n2.lat - n1.lat) * segmentT;
+              const pLon = n1.lon + (n2.lon - n1.lon) * segmentT;
+
+              const pktId = `flow-${curSelected}-${route.destination}`;
+              activePacketIds.add(pktId);
+
+              let marker = packetMarkersRef.current.get(pktId);
+              if (!marker) {
+                marker = L.circleMarker([pLat, pLon], {
+                  radius: 4.5,
+                  fillColor: '#00E5FF', // bright cyan packet
+                  fillOpacity: 0.95,
+                  color: '#ffffff',
+                  weight: 1.5,
+                  className: 'pulse-packet-marker'
+                }).addTo(map);
+                packetMarkersRef.current.set(pktId, marker);
+              } else {
+                marker.setLatLng([pLat, pLon]);
+              }
+            }
+          }
         }
-        pIdx++;
-      }
+      });
 
       // Remove any markers that are no longer active
       for (const [id, marker] of packetMarkersRef.current.entries()) {
@@ -336,9 +355,12 @@ export default function CommandCenter() {
 
     return () => {
       cancelAnimationFrame(animId);
-      cleanUpPacketMarkers();
+      // Only clear markers if mode changed to simulation or component unmounts
+      if (dataSourceManager.mode === 'simulation' || !isMountedRef.current) {
+        cleanUpPacketMarkers();
+      }
     };
-  }, [graph, dataSourceManager.mode, tick]);
+  }, [graph, dataSourceManager.mode, tick, packetFlowActive, simSpeed, selectedNode]);
 
   // Canvas Loop for Simulation Mode
   useEffect(() => {
@@ -358,7 +380,9 @@ export default function CommandCenter() {
     ro.observe(container);
 
     function draw() {
-      timeRef.current += 0.016;
+      if (sim.isRunning) {
+        timeRef.current += 0.016 * simSpeed;
+      }
       const t = timeRef.current;
       const ctx = canvas.getContext('2d');
       const w = canvas.width, h = canvas.height;
@@ -413,32 +437,34 @@ export default function CommandCenter() {
         ctx.lineDashOffset = 0;
       }
 
-      // Active Packets — only draw when flow is active (sim.isRunning)
-      if (sim.isRunning) {
-        for (const pkt of sim.activePackets) {
-          if (!pkt.path || pkt.path.length < 2) continue;
-          const progress = (t * 0.45) % 1;
-          const totalSegs = pkt.path.length - 1;
-          const segFloat = progress * totalSegs;
-          const seg = Math.min(Math.floor(segFloat), totalSegs - 1);
-          const segT = segFloat - seg;
-          const sn = graph.nodes.get(pkt.path[seg]);
-          const en = graph.nodes.get(pkt.path[seg + 1]);
-          if (!sn || !en) continue;
-          const sp = nodePos(sn, w, h, PAD);
-          const ep = nodePos(en, w, h, PAD);
-          const px = sp.x + (ep.x - sp.x) * segT;
-          const py = sp.y + (ep.y - sp.y) * segT;
-
-          const color = pkt.getPriorityColor();
-          ctx.shadowColor = color;
-          ctx.shadowBlur = 12;
-          ctx.fillStyle = color;
-          ctx.beginPath();
-          ctx.arc(px, py, 4.5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.shadowBlur = 0;
+      // Active Packets — draw as long as they are active (freeze on pause)
+      for (const pkt of sim.activePackets) {
+        if (!pkt.path || pkt.path.length < 2) continue;
+        if (pkt.startTime === undefined) {
+          pkt.startTime = t;
         }
+        // Smoothly progress visual position based on the packet's lifespan duration
+        const progress = Math.min(0.99, (t - pkt.startTime) / (pkt.duration || 2.0));
+        const totalSegs = pkt.path.length - 1;
+        const segFloat = progress * totalSegs;
+        const seg = Math.min(Math.floor(segFloat), totalSegs - 1);
+        const segT = segFloat - seg;
+        const sn = graph.nodes.get(pkt.path[seg]);
+        const en = graph.nodes.get(pkt.path[seg + 1]);
+        if (!sn || !en) continue;
+        const sp = nodePos(sn, w, h, PAD);
+        const ep = nodePos(en, w, h, PAD);
+        const px = sp.x + (ep.x - sp.x) * segT;
+        const py = sp.y + (ep.y - sp.y) * segT;
+
+        const color = pkt.getPriorityColor();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
       }
 
       // Nodes
@@ -520,7 +546,7 @@ export default function CommandCenter() {
       cancelAnimationFrame(animRef.current);
       ro.disconnect();
     };
-  }, [graph, sim, selectedNode, dataSourceManager.mode, tick, packetFlowActive]);
+  }, [graph, sim, selectedNode, dataSourceManager.mode, tick, packetFlowActive, simSpeed]);
 
   const handleToggleSim = () => {
     if (sim.isRunning) {
@@ -534,6 +560,14 @@ export default function CommandCenter() {
   };
 
   const handleReset = () => {
+    // Clear Leaflet Map packet markers
+    for (const m of packetMarkersRef.current.values()) {
+      const map = mapRef.current;
+      if (map) map.removeLayer(m);
+    }
+    packetMarkersRef.current.clear();
+    mapTimeRef.current = 0;
+
     sim.stop();
     graph.resetToPreset(preset, nodeCount);
     sim.packets = [];
@@ -548,9 +582,10 @@ export default function CommandCenter() {
     sim.eventLog.clear();
     sim.eventLog.add('info', 'Simulation reset');
     setSelectedNode(null);
-    if (!dataSourceManager.isHardware) {
+    if (dataSourceManager.mode === 'simulation') {
       sim.start();
     }
+    setPacketFlowActive(true);
     setTick(t => t + 1);
   };
 

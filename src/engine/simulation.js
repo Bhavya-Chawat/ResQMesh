@@ -90,6 +90,7 @@ export class SimulationEngine {
     this.isRunning = false;
     this.tickRate = 1000; // ms between sensor updates
     this.packetRate = 2000; // ms between auto packet sends
+    this.speed = 1;
     this.listeners = new Set();
     this._sensorInterval = null;
     this._packetInterval = null;
@@ -120,6 +121,7 @@ export class SimulationEngine {
     this._sensorInterval = setInterval(() => {
       this.graph.updateSensors();
       this.checkAlerts();
+      this.updateActivePackets();
       this.notify();
     }, this.tickRate);
 
@@ -138,6 +140,7 @@ export class SimulationEngine {
   }
 
   setSpeed(speed) {
+    this.speed = speed;
     this.tickRate = 1000 / speed;
     this.packetRate = 2000 / speed;
     if (this.isRunning) {
@@ -146,6 +149,7 @@ export class SimulationEngine {
       this._sensorInterval = setInterval(() => {
         this.graph.updateSensors();
         this.checkAlerts();
+        this.updateActivePackets();
         this.notify();
       }, this.tickRate);
       this._packetInterval = setInterval(() => {
@@ -153,6 +157,25 @@ export class SimulationEngine {
         this.notify();
       }, this.packetRate);
     }
+  }
+
+  updateActivePackets() {
+    const dt = this.tickRate / 1000;
+    this.activePackets.forEach(packet => {
+      if (packet.remainingTime === undefined) {
+        packet.duration = 1.5 + Math.random() * 2.0;
+        packet.remainingTime = packet.duration;
+      }
+      packet.remainingTime -= dt;
+      if (packet.remainingTime <= 0) {
+        packet.status = 'delivered';
+        packet.hopCount = packet.path.length - 1;
+        this.stats.totalPacketsDelivered++;
+        const dstLabel = this.graph.nodes.get(packet.destination)?.label;
+        this.eventLog.add('success', `Packet #${packet.id} delivered to ${dstLabel} (${packet.hopCount} hops)`);
+      }
+    });
+    this.activePackets = this.activePackets.filter(p => p.status === 'transit');
   }
 
   generateRandomPacket() {
@@ -187,6 +210,8 @@ export class SimulationEngine {
     }
 
     packet.path = path;
+    packet.duration = 1.5 + Math.random() * 2.0;
+    packet.remainingTime = packet.duration;
     this.packets.push(packet);
     this.activePackets.push(packet);
     this.stats.totalPacketsSent++;
@@ -194,16 +219,6 @@ export class SimulationEngine {
     const srcLabel = this.graph.nodes.get(sourceId)?.label;
     const dstLabel = this.graph.nodes.get(destId)?.label;
     this.eventLog.add('network', `${packet.getTypeIcon()} Packet #${packet.id} [${type}] QoS:${qos} ${srcLabel} → ${dstLabel} (${path.length - 1} hops)`);
-
-    // Simulate delivery after delay
-    setTimeout(() => {
-      packet.status = 'delivered';
-      packet.hopCount = path.length - 1;
-      this.stats.totalPacketsDelivered++;
-      this.activePackets = this.activePackets.filter(p => p.id !== packet.id);
-      this.eventLog.add('success', `Packet #${packet.id} delivered to ${dstLabel} (${packet.hopCount} hops)`);
-      this.notify();
-    }, 1500 + Math.random() * 2000);
 
     return packet;
   }

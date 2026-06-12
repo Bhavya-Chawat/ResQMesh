@@ -306,7 +306,7 @@ function AppShell() {
 
   const isLanding = location.pathname === '/';
 
-  const ctx = { graph, sim, dataSourceManager, theme, tick, packetFlowActive, setPacketFlowActive };
+  const ctx = { graph, sim, dataSourceManager, theme, tick, setTick, packetFlowActive, setPacketFlowActive };
 
   return (
     <AppContext.Provider value={ctx}>
