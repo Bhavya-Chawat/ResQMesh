@@ -4,6 +4,16 @@ import dataSourceManager from '../services/dataSourceManager';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
 
+const NODE_LABELS = {
+  A: 'Hebbal Flyover (Bridge)',
+  B: 'Silk Board Junction (Underpass)',
+  C: 'Majestic Transit Hub',
+  D: 'Whitefield IT Corridor',
+  E: 'Peenya Industrial Area'
+};
+
+const getNodeLabel = (id) => NODE_LABELS[id] || `Node ${id}`;
+
 export default function Reports() {
   const { graph } = useApp();
   const [selectedNode, setSelectedNode] = useState('all');
@@ -54,11 +64,11 @@ export default function Reports() {
   const handleExportCSV = () => {
     if (!history || history.length === 0) return;
     
-    const headers = ['Record ID', 'Timestamp', 'Node ID', 'Temperature (°C)', 'Humidity (%)', 'Gas Level (ppm)'];
+    const headers = ['Record ID', 'Timestamp', 'Node / Area', 'Temperature (°C)', 'Humidity (%)', 'Gas Level (ppm)'];
     const rows = history.map(r => [
       r.id,
       r.timestamp,
-      r.node_id,
+      getNodeLabel(r.node_id),
       r.temperature !== null ? r.temperature : 'N/A',
       r.humidity !== null ? r.humidity : 'N/A',
       r.gas_level !== null ? r.gas_level : 'N/A'
@@ -157,7 +167,7 @@ export default function Reports() {
       <div className="print-only-header">
         <h1>ResQMesh Mission Telemetry Report</h1>
         <p>Generated on: {new Date().toLocaleString()}</p>
-        <p>Source Node Filter: {selectedNode === 'all' ? 'All Active Mesh Nodes' : `Node ${selectedNode}`}</p>
+        <p>Source Node Filter: {selectedNode === 'all' ? 'All Active Mesh Nodes' : getNodeLabel(selectedNode)}</p>
         <hr />
       </div>
 
@@ -182,7 +192,7 @@ export default function Reports() {
                 >
                   <option value="all">All Active Nodes</option>
                   {nodeOptions.map(opt => (
-                    <option key={opt} value={opt}>Node {opt}</option>
+                    <option key={opt} value={opt}>{getNodeLabel(opt)}</option>
                   ))}
                 </select>
               </div>
@@ -313,7 +323,7 @@ export default function Reports() {
                         style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)' }}
                       >
                         <td style={{ padding: '10px 14px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{row.timestamp}</td>
-                        <td style={{ padding: '10px 14px', fontWeight: 'bold', color: 'var(--nash-chartreuse)' }}>Node {row.node_id}</td>
+                        <td style={{ padding: '10px 14px', fontWeight: 'bold', color: 'var(--nash-chartreuse)' }}>{getNodeLabel(row.node_id)}</td>
                         <td style={{ padding: '10px 14px', color: row.temperature > 45 ? 'var(--neon-red)' : 'var(--text-primary)' }}>
                           {row.temperature !== null ? `${row.temperature.toFixed(1)}°C` : 'N/A'}
                         </td>
